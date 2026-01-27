@@ -1,0 +1,303 @@
+# app/services/moysklad.py
+from typing import Any, Dict, Optional, List
+import os
+import mimetypes
+import logging
+import requests
+
+from ..config import MOYSKLAD_BASE_URL, MOYSKLAD_TOKEN
+
+TIMEOUT = 20
+logger = logging.getLogger(__name__)
+
+
+class MoySkladError(RuntimeError):
+    pass
+
+
+def _headers() -> Dict[str, str]:
+    if not MOYSKLAD_TOKEN:
+        raise RuntimeError("MOYSKLAD_TOKEN topilmadi. .env faylga MOYSKLAD_TOKEN kiriting.")
+    return {
+        "Authorization": f"Bearer {MOYSKLAD_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json;charset=utf-8",
+    }
+
+
+def _url(path: str) -> str:
+    return f"{MOYSKLAD_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+
+
+def ms_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    try:
+        r = requests.get(_url(path), headers=_headers(), params=params, timeout=TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        resp = e.response
+        if resp is not None:
+            raise MoySkladError(
+                f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
+            ) from e
+        raise
+
+
+def ms_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        r = requests.post(_url(path), headers=_headers(), json=payload, timeout=TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        resp = e.response
+        if resp is not None:
+            raise MoySkladError(
+                f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
+            ) from e
+        raise
+
+
+def ms_put(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        r = requests.put(_url(path), headers=_headers(), json=payload, timeout=TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        resp = e.response
+        if resp is not None:
+            raise MoySkladError(
+                f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
+            ) from e
+        raise
+
+
+# ================= BASIC =================
+
+def get_default_organization() -> Dict[str, Any]:
+    data = ms_get("/entity/organization", params={"limit": 1})
+    rows = data.get("rows", [])
+    if not rows:
+        raise MoySkladError("Organization topilmadi.")
+    return rows[0]
+
+
+# ================= PROJECT (BREND) =================
+
+def get_or_create_project(brand_raw: str) -> Dict[str, Any]:
+    """
+    Brendni Project sifatida topadi yoki yaratadi.
+    Tavsiya: search ishlatamiz (filter name=... ba'zan noaniq bo'ladi).
+    """
+    brand = " ".join((brand_raw or "").strip().upper().split())
+    if not brand:
+        raise ValueError("Brend nomi bo‘sh bo‘lmasligi kerak.")
+
+    data = ms_get("/entity/project", params={"search": brand, "limit": 1})
+    rows = data.get("rows", [])
+    if rows:
+        # Aynan mosini birinchi o'ringa chiqarish
+        for r in rows:
+            if (r.get("name") or "").strip().upper() == brand:
+                return r
+        return rows[0]
+
+    return ms_post("/entity/project", {"name": brand})
+
+
+# ================= SALES CHANNEL =================
+
+def get_sales_channels(limit: int = 50) -> List[Dict[str, Any]]:
+    data = ms_get("/entity/saleschannel", params={"limit": limit})
+    return data.get("rows", [])
+
+
+# ================= COUNTERPARTY (PHONE-FIRST) =================
+
+def _norm_phone(phone: str) -> str:
+    return "".join(ch for ch in (phone or "") if ch.isdigit())
+
+
+def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
+    """
+    Telefon bo‘yicha topish.
+    """
+    p = _norm_phone(phone)
+    if not p:
+        return None
+
+    data = ms_get("/entity/counterparty", params={"filter": f"phone~{p}", "limit": 1})
+    rows = data.get("rows", [])
+    return rows[0] if rows else None
+
+
+def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
+    """
+    1) phone bo‘lsa: avval phone bilan topadi
+    2) topilmasa: name bilan topadi
+    3) topilmasa: yaratadi
+    Topilganda phone/name bo‘sh bo‘lsa yangilaydi (yengil update).
+    """
+    name = (name or "").strip()
+    phone_n = _norm_phone(phone or "")
+
+    # 1) phone bilan topamiz
+    if phone_n:
+        found = find_counterparty_by_phone(phone_n)
+        if found:
+            cp_id = found.get("id")
+            updates: Dict[str, Any] = {}
+
+            if name and (found.get("name") or "").strip() != name:
+                updates["name"] = name
+
+            if not _norm_phone(found.get("phone") or ""):
+                updates["phone"] = phone_n
+
+            if updates and cp_id:
+                return ms_put(f"/entity/counterparty/{cp_id}", updates)
+            return found
+
+    # 2) name bilan topamiz
+    if name:
+        data = ms_get("/entity/counterparty", params={"search": name, "limit": 1})
+        rows = data.get("rows", [])
+        if rows:
+            cp = rows[0]
+            cp_id = cp.get("id")
+            updates: Dict[str, Any] = {}
+
+            if phone_n and not _norm_phone(cp.get("phone") or ""):
+                updates["phone"] = phone_n
+
+            if updates and cp_id:
+                return ms_put(f"/entity/counterparty/{cp_id}", updates)
+            return cp
+
+    # 3) yaratamiz
+    payload: Dict[str, Any] = {"name": name or phone_n or "NoName"}
+    if phone_n:
+        payload["phone"] = phone_n
+    return ms_post("/entity/counterparty", payload)
+
+
+# ================= PAYMENT (KARTA) =================
+
+def create_paymentin(
+    organization_meta: Dict[str, Any],
+    agent_meta: Dict[str, Any],
+    project_meta: Optional[Dict[str, Any]],  # moslik uchun qoldirdik, payloadga qo‘shmaymiz
+    sales_channel_meta: Dict[str, Any],
+    sum_uzs: int,
+    date_iso: str,
+    description: str,
+) -> Dict[str, Any]:
+    """
+    Входящий платёж (karta).
+    Talabga ko‘ra 'project' to‘ldirilmaydi.
+    """
+    if sum_uzs <= 0:
+        raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
+
+    payload: Dict[str, Any] = {
+        "organization": {"meta": organization_meta},
+        "agent": {"meta": agent_meta},
+        # "project": {"meta": project_meta},  # ❌ TALAB: 'Проект' bo‘sh qolishi kerak
+        "salesChannel": {"meta": sales_channel_meta},
+        "sum": int(sum_uzs) * 100,
+        "moment": f"{date_iso} 00:00:00",
+        "description": description,
+    }
+    return ms_post("/entity/paymentin", payload)
+
+
+# ================= CASH IN (NAQT) =================
+
+def create_cashin(
+    organization_meta: Dict[str, Any],
+    agent_meta: Dict[str, Any],
+    project_meta: Optional[Dict[str, Any]],  # moslik uchun qoldirdik, payloadga qo‘shmaymiz
+    sales_channel_meta: Dict[str, Any],
+    sum_uzs: int,
+    date_iso: str,
+    description: str,
+) -> Dict[str, Any]:
+    """
+    Приходный ордер (naqt).
+    Talabga ko‘ra 'project' to‘ldirilmaydi.
+    """
+    if sum_uzs <= 0:
+        raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
+
+    payload: Dict[str, Any] = {
+        "organization": {"meta": organization_meta},
+        "agent": {"meta": agent_meta},
+        # "project": {"meta": project_meta},  # ❌ TALAB: 'Проект' bo‘sh qolishi kerak
+        "salesChannel": {"meta": sales_channel_meta},
+        "sum": int(sum_uzs) * 100,
+        "moment": f"{date_iso} 00:00:00",
+        "description": description,
+    }
+    return ms_post("/entity/cashin", payload)
+
+
+# ================= FILE ATTACH (best-effort) =================
+
+def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """
+    /entity/{entity}/{id}/files ga multipart bilan yuklash (best-effort).
+    """
+    if not doc_id or not file_path or not os.path.exists(file_path):
+        return None
+
+    url = _url(f"/entity/{entity}/{doc_id}/files")
+
+    filename = os.path.basename(file_path)
+    mime, _ = mimetypes.guess_type(filename)
+    mime = mime or "application/octet-stream"
+
+    headers = _headers().copy()
+    headers.pop("Content-Type", None)  # multipartni requests o'zi qo'yadi
+
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (filename, f, mime)}
+            r = requests.post(url, headers=headers, files=files, timeout=TIMEOUT)
+            r.raise_for_status()
+            return r.json() if r.text else {"ok": True}
+    except Exception as e:
+        # best-effort, lekin log qoldiramiz
+        logger.warning("File attach failed: entity=%s id=%s file=%s err=%s", entity, doc_id, file_path, e)
+        return None
+
+
+def attach_file_to_paymentin(paymentin_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    return _attach_file_generic("paymentin", paymentin_id, file_path)
+
+
+def attach_file_to_cashin(cashin_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    return _attach_file_generic("cashin", cashin_id, file_path)
+
+
+# ================= BACKWARD COMPAT ALIAS =================
+
+def create_incoming_payment(
+    organization_meta: Dict[str, Any],
+    agent_meta: Dict[str, Any],
+    project_meta: Optional[Dict[str, Any]],
+    sales_channel_meta: Dict[str, Any],
+    sum_uzs: int,
+    date_iso: str,
+    description: str,
+) -> Dict[str, Any]:
+    """
+    Eski nom bilan import bo‘lsa ham ishlayveradi (karta -> paymentin).
+    """
+    return create_paymentin(
+        organization_meta=organization_meta,
+        agent_meta=agent_meta,
+        project_meta=project_meta,
+        sales_channel_meta=sales_channel_meta,
+        sum_uzs=sum_uzs,
+        date_iso=date_iso,
+        description=description,
+    )
