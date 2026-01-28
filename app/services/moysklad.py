@@ -17,7 +17,7 @@ class MoySkladError(RuntimeError):
 
 def _headers() -> Dict[str, str]:
     if not MOYSKLAD_TOKEN:
-        raise RuntimeError("MOYSKLAD_TOKEN topilmadi. .env faylga MOYSKLAD_TOKEN kiriting.")
+        raise RuntimeError("MOYSKLAD_TOKEN topilmadi. .env / Railway Variables ga MOYSKLAD_TOKEN kiriting.")
     return {
         "Authorization": f"Bearer {MOYSKLAD_TOKEN}",
         "Content-Type": "application/json",
@@ -37,9 +37,7 @@ def ms_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     except requests.HTTPError as e:
         resp = e.response
         if resp is not None:
-            raise MoySkladError(
-                f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
-            ) from e
+            raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
         raise
 
 
@@ -51,9 +49,7 @@ def ms_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     except requests.HTTPError as e:
         resp = e.response
         if resp is not None:
-            raise MoySkladError(
-                f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
-            ) from e
+            raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
         raise
 
 
@@ -65,9 +61,7 @@ def ms_put(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     except requests.HTTPError as e:
         resp = e.response
         if resp is not None:
-            raise MoySkladError(
-                f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
-            ) from e
+            raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
         raise
 
 
@@ -95,9 +89,6 @@ def _norm_phone(phone: str) -> str:
 
 
 def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
-    """
-    Telefon bo‘yicha topish.
-    """
     p = _norm_phone(phone)
     if not p:
         return None
@@ -108,12 +99,6 @@ def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
 
 
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
-    """
-    1) phone bo‘lsa: avval phone bilan topadi
-    2) topilmasa: name bilan topadi
-    3) topilmasa: yaratadi
-    Topilganda phone/name bo‘sh bo‘lsa yangilaydi (yengil update).
-    """
     name = (name or "").strip()
     phone_n = _norm_phone(phone or "")
 
@@ -169,7 +154,7 @@ def create_paymentin(
 ) -> Dict[str, Any]:
     """
     Входящий платёж (karta).
-    ✅ TALAB: 'project' umuman yuborilmasin.
+    ✅ TALAB: 'project' umuman yuborilmaydi (Проект bo‘sh qoladi).
     """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
@@ -182,10 +167,6 @@ def create_paymentin(
         "moment": f"{date_iso} 00:00:00",
         "description": description,
     }
-
-    # ✅ Qattiq himoya: tasodifan qo‘shilib qolsa ham olib tashlaymiz
-    payload.pop("project", None)
-
     return ms_post("/entity/paymentin", payload)
 
 
@@ -201,7 +182,7 @@ def create_cashin(
 ) -> Dict[str, Any]:
     """
     Приходный ордер (naqt).
-    ✅ TALAB: 'project' umuman yuborilmasin.
+    ✅ TALAB: 'project' umuman yuborilmaydi (Проект bo‘sh qoladi).
     """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
@@ -214,19 +195,12 @@ def create_cashin(
         "moment": f"{date_iso} 00:00:00",
         "description": description,
     }
-
-    # ✅ Qattiq himoya
-    payload.pop("project", None)
-
     return ms_post("/entity/cashin", payload)
 
 
 # ================= FILE ATTACH (best-effort) =================
 
 def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[Dict[str, Any]]:
-    """
-    /entity/{entity}/{id}/files ga multipart bilan yuklash (best-effort).
-    """
     if not doc_id or not file_path or not os.path.exists(file_path):
         return None
 
@@ -268,10 +242,6 @@ def create_incoming_payment(
     date_iso: str,
     description: str,
 ) -> Dict[str, Any]:
-    """
-    Eski nom bilan import bo‘lsa ham ishlayveradi (karta -> paymentin).
-    ✅ project parametri butunlay olib tashlandi.
-    """
     return create_paymentin(
         organization_meta=organization_meta,
         agent_meta=agent_meta,

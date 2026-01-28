@@ -9,9 +9,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from dateutil import parser as du_parser
 
 from ..config import GROUP_CHAT_ID
-from ..keyboards import main_menu_kb
 from ..services.moysklad import (
-    get_or_create_project,   # project yaratib qo'yish mumkin (lekin hujjatga yubormaymiz)
     get_sales_channels,
     get_default_organization,
     get_or_create_counterparty,
@@ -81,13 +79,10 @@ def _parse_amount_date_one_line(text: str) -> Tuple[Optional[int], Optional[str]
       600000-12.01.2026
       600000 - 12.01.2026
       600000/12.01.2026
-      600 000-12.01.2026
     Natija:
       (600000, "2026-01-12")
     """
     s = (text or "").strip()
-
-    # separator: "-" yoki "/" yoki "," (bitta xabarda)
     m = re.match(r"^\s*([0-9][0-9\s.,]{2,20})\s*[-/,]\s*(.+?)\s*$", s)
     if not m:
         return None, None
@@ -112,11 +107,16 @@ def _parse_amount_date_one_line(text: str) -> Tuple[Optional[int], Optional[str]
     return amount, date_iso
 
 
+def _norm_brand(brand_raw: str) -> str:
+    """✅ Project umuman ishlatmaymiz. Faqat brend nomini tozalaymiz."""
+    return " ".join((brand_raw or "").strip().upper().split())
+
+
 # ---------------- Conversation flow ----------------
 
 async def kiritish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
-        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=main_menu_kb())
+        await update.message.reply_text("❌ Avval /login qiling.")
         return ConversationHandler.END
 
     await update.message.reply_text(
@@ -125,8 +125,7 @@ async def kiritish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Misol:\n"
         "NIKE-Azamat-+998919915252\n"
         "yoki:\n"
-        "NIKE-Azamat-919915252",
-        reply_markup=main_menu_kb(),
+        "NIKE-Azamat-919915252"
     )
     return STEP_TEXT
 
@@ -135,33 +134,23 @@ async def step_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     parts = [p.strip() for p in text.split("-", maxsplit=2)]
     if len(parts) != 3:
-        await update.message.reply_text(
-            "❌ Format xato.\nTo'g'ri format:\nBREND-Mijoz Ismi-Telefon",
-            reply_markup=main_menu_kb(),
-        )
+        await update.message.reply_text("❌ Format xato.\nTo'g'ri format:\nBREND-Mijoz Ismi-Telefon")
         return STEP_TEXT
 
     brand_raw, client_name, phone_raw = parts
 
-    phone_plus = _normalize_phone_uz(phone_raw)
-    if not phone_plus:
-        await update.message.reply_text(
-            "❌ Telefon noto‘g‘ri. Masalan: +998901234567 yoki 901234567",
-            reply_markup=main_menu_kb(),
-        )
+    brand_norm = _norm_brand(brand_raw)
+    if not brand_norm:
+        await update.message.reply_text("❌ Brend bo‘sh bo‘lmasligi kerak.")
         return STEP_TEXT
 
-    # project yaratishni saqlab qolamiz (xohlasa), lekin hujjatga qo‘ymaymiz.
-    try:
-        project = get_or_create_project(brand_raw)
-        brand_norm = project.get("name") or " ".join(brand_raw.strip().upper().split())
-    except Exception:
-        brand_norm = " ".join(brand_raw.strip().upper().split())
-        project = None
+    phone_plus = _normalize_phone_uz(phone_raw)
+    if not phone_plus:
+        await update.message.reply_text("❌ Telefon noto‘g‘ri. Masalan: +998901234567 yoki 901234567")
+        return STEP_TEXT
 
     context.user_data["order"] = {
         "brand": brand_norm,
-        "project_meta": project.get("meta") if project else None,  # hujjatga yubormaymiz
         "client_name": client_name,
         "phone_plus": phone_plus,
         "phone_digits": _digits_only_phone(phone_plus),
@@ -172,8 +161,7 @@ async def step_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷 Brend: {brand_norm}\n"
         f"👤 Mijoz: {client_name}\n"
         f"📞 Tel: {phone_plus}\n\n"
-        "📎 Endi chekni rasm (foto) ko‘rinishida yuboring.",
-        reply_markup=main_menu_kb(),
+        "📎 Endi chekni rasm (foto) ko‘rinishida yuboring."
     )
     return STEP_CHECK
 
@@ -181,19 +169,15 @@ async def step_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
 
-    # PDF hozircha yo‘q
     if msg.document and (
         msg.document.mime_type == "application/pdf"
         or (msg.document.file_name or "").lower().endswith(".pdf")
     ):
-        await msg.reply_text(
-            "📄 Hozircha PDF qabul qilmaymiz. Iltimos, chekni foto qilib yuboring.",
-            reply_markup=main_menu_kb(),
-        )
+        await msg.reply_text("📄 Hozircha PDF qabul qilmaymiz. Iltimos, chekni foto qilib yuboring.")
         return STEP_CHECK
 
     if not msg.photo:
-        await msg.reply_text("❌ Iltimos, chekni rasm (foto) sifatida yuboring.", reply_markup=main_menu_kb())
+        await msg.reply_text("❌ Iltimos, chekni rasm (foto) sifatida yuboring.")
         return STEP_CHECK
 
     file = await msg.photo[-1].get_file()
@@ -204,8 +188,7 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         "✅ Chek qabul qilindi.\n"
         "💰 Summani va 📅 sanani bitta xabarda kiriting:\n"
-        "Masalan: 600000-28.01.2026",
-        reply_markup=main_menu_kb(),
+        "Masalan: 600000-28.01.2026"
     )
     return STEP_AMOUNT_DATE
 
@@ -218,28 +201,25 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(
             "❌ Format noto‘g‘ri.\n"
             "Iltimos bitta xabarda shunday yozing:\n"
-            "600000-28.01.2026",
-            reply_markup=main_menu_kb(),
+            "600000-28.01.2026"
         )
         return STEP_AMOUNT_DATE
 
     context.user_data["amount_uzs"] = int(amount)
     context.user_data["date_iso"] = str(date_iso)
 
-    return await ask_sales_channel(update, context)
+    return await ask_sales_channel(update.message, context)
 
 
-async def ask_sales_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-
+async def ask_sales_channel(message, context: ContextTypes.DEFAULT_TYPE):
     try:
         channels = get_sales_channels(limit=50)
     except Exception as e:
-        await message.reply_text(f"❌ Kanal olishda xatolik: {e}", reply_markup=main_menu_kb())
+        await message.reply_text(f"❌ Kanal olishda xatolik: {e}")
         return ConversationHandler.END
 
     if not channels:
-        await message.reply_text("❌ MoySklad’da 'канал продаж' topilmadi. Avval sales channel yarating.", reply_markup=main_menu_kb())
+        await message.reply_text("❌ MoySklad’da 'канал продаж' topilmadi. Avval sales channel yarating.")
         return ConversationHandler.END
 
     channels = channels[:10]
@@ -258,7 +238,6 @@ async def on_sales_channel_chosen(update: Update, context: ContextTypes.DEFAULT_
     sc_meta = (context.user_data.get("channels_map") or {}).get(sc_id)
     if not sc_meta:
         await query.edit_message_text("❌ Kanal topilmadi. Qaytadan /kiritish qiling.")
-        await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=main_menu_kb())
         return ConversationHandler.END
 
     context.user_data["sales_channel_meta"] = sc_meta
@@ -286,17 +265,8 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sc_meta = context.user_data.get("sales_channel_meta")
     check_path = context.user_data.get("check_path")
 
-    if amount <= 0:
-        await query.edit_message_text("❌ Summa noto‘g‘ri. Qaytadan /kiritish qiling.")
-        await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=main_menu_kb())
-        return ConversationHandler.END
-    if not date_iso:
-        await query.edit_message_text("❌ Sana yo‘q. Qaytadan /kiritish qiling.")
-        await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=main_menu_kb())
-        return ConversationHandler.END
-    if not sc_meta:
-        await query.edit_message_text("❌ Sales channel yo‘q. Qaytadan /kiritish qiling.")
-        await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=main_menu_kb())
+    if amount <= 0 or not date_iso or not sc_meta:
+        await query.edit_message_text("❌ Ma’lumot yetarli emas. Qaytadan /kiritish qiling.")
         return ConversationHandler.END
 
     try:
@@ -312,12 +282,11 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Operator: {operator.get('name')} ({operator.get('phone')})"
         )
 
-        # ✅ payloadga "project" qo‘ymaymiz -> Проект bo‘sh qoladi
+        # ✅ MUHIM: PROJECT umuman yuborilmaydi (Проект bo‘sh)
         if pt == "card":
             created = create_paymentin(
                 organization_meta=org["meta"],
                 agent_meta=cp["meta"],
-                project_meta=None,
                 sales_channel_meta=sc_meta,
                 sum_uzs=amount,
                 date_iso=date_iso,
@@ -330,7 +299,6 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             created = create_cashin(
                 organization_meta=org["meta"],
                 agent_meta=cp["meta"],
-                project_meta=None,
                 sales_channel_meta=sc_meta,
                 sum_uzs=amount,
                 date_iso=date_iso,
@@ -343,15 +311,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"✅ MoySklad’ga {doc_kind} yuborildi.\n"
             f"📄 Doc: {created.get('name','N/A')}\n"
-            f"🆔 ID: {created.get('id','N/A')}\n\n"
-            f"➡️ Keyingi buyurtma uchun /kiritish ni bosing."
-        )
-
-        # ✅ Eng muhimi: menyu doim chiqib tursin
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="Menu:",
-            reply_markup=main_menu_kb(),
+            f"🆔 ID: {created.get('id','N/A')}"
         )
 
         if GROUP_CHAT_ID:
@@ -373,12 +333,11 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         await query.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
-        await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=main_menu_kb())
         return ConversationHandler.END
 
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bekor qilindi.", reply_markup=main_menu_kb())
+    await update.message.reply_text("Bekor qilindi.")
     return ConversationHandler.END
