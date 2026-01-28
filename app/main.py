@@ -59,7 +59,6 @@ def build_app() -> Application:
 
     application.add_handler(CommandHandler("start", start))
 
-    # REGISTER
     register_conv = ConversationHandler(
         entry_points=[CommandHandler("register", register_start)],
         states={
@@ -72,7 +71,6 @@ def build_app() -> Application:
     )
     application.add_handler(register_conv)
 
-    # LOGIN
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login", login_start)],
         states={
@@ -84,7 +82,6 @@ def build_app() -> Application:
     )
     application.add_handler(login_conv)
 
-    # ORDER FLOW
     order_conv = ConversationHandler(
         entry_points=[CommandHandler("kiritish", kiritish_start)],
         states={
@@ -104,25 +101,20 @@ def build_app() -> Application:
 
 
 def main():
-    """
-    Railway webhook:
-      - Railway VARIABLES: WEBHOOK_BASE=https://<generated-domain>
-      - Railway VARIABLES: PORT (Railway o‘zi beradi)
-      - Webhook URL: {WEBHOOK_BASE}/telegram/{BOT_TOKEN}
-    """
     init_db()
     app = build_app()
 
     base = os.getenv("WEBHOOK_BASE", "").strip().rstrip("/")
     if not base:
-        raise RuntimeError("WEBHOOK_BASE yo‘q. Masalan: https://zakariyyo-bot-production.up.railway.app")
+        raise RuntimeError("WEBHOOK_BASE yo‘q. Railway Variables ga WEBHOOK_BASE qo‘ying.")
 
     port = int(os.getenv("PORT", "8080"))
 
+    # Webhook URL: https://domain/telegram/<BOT_TOKEN>
     webhook_path = f"/telegram/{BOT_TOKEN}"
     webhook_url = f"{base}{webhook_path}"
 
-    logger.info(f"🚀 Bot ishga tushmoqda (webhook)... url={webhook_url} port={port}")
+    logger.info(f"🚀 Webhook mode: {webhook_url} (port={port})")
 
     app.run_webhook(
         listen="0.0.0.0",
