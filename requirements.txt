@@ -1,7 +1,8 @@
-python-telegram-bot==21.6
+python-telegram-bot[webhooks]==21.6
+aiohttp==3.9.5
 python-dotenv==1.0.1
 requests==2.32.3
-
 pytesseract==0.3.13
-Pillow==10.4.0
+pillow==11.1.0
 python-dateutil==2.9.0.post0
+
