@@ -1,6 +1,5 @@
-# app/main.py
-import os
 import logging
+import os
 
 from telegram.ext import (
     Application,
@@ -98,7 +97,6 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
         allow_reentry=True,
-        # per_message ni qo'ymang (warninglar va cheklovlar chiqadi)
     )
     application.add_handler(order_conv)
 
@@ -106,27 +104,31 @@ def build_app() -> Application:
 
 
 def main():
-    logger.info("🚀 Bot ishga tushmoqda (WEBHOOK MODE)...")
+    """
+    Railway webhook:
+      - Railway VARIABLES: WEBHOOK_BASE=https://<generated-domain>
+      - Railway VARIABLES: PORT (Railway o‘zi beradi)
+      - Webhook URL: {WEBHOOK_BASE}/telegram/{BOT_TOKEN}
+    """
     init_db()
-
     app = build_app()
 
-    # Railway env
-    port = int(os.getenv("PORT", "8080"))
-    base = (os.getenv("WEBHOOK_URL", "") or "").rstrip("/")
-    path = os.getenv("WEBHOOK_PATH", "/telegram").strip()
-    if not path.startswith("/"):
-        path = "/" + path
-
+    base = os.getenv("WEBHOOK_BASE", "").strip().rstrip("/")
     if not base:
-        raise RuntimeError("WEBHOOK_URL yo'q. Railway Variables ga WEBHOOK_URL qo'shing.")
+        raise RuntimeError("WEBHOOK_BASE yo‘q. Masalan: https://zakariyyo-bot-production.up.railway.app")
 
-    # PTB o'zi webhookni o'rnatadi (setWebhook) va HTTP server ochadi
+    port = int(os.getenv("PORT", "8080"))
+
+    webhook_path = f"/telegram/{BOT_TOKEN}"
+    webhook_url = f"{base}{webhook_path}"
+
+    logger.info(f"🚀 Bot ishga tushmoqda (webhook)... url={webhook_url} port={port}")
+
     app.run_webhook(
         listen="0.0.0.0",
         port=port,
-        url_path=path.lstrip("/"),
-        webhook_url=base + path,
+        url_path=webhook_path.lstrip("/"),
+        webhook_url=webhook_url,
         drop_pending_updates=True,
     )
 
