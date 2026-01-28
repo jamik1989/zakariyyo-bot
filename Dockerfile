@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-# System deps (OCR uchun)
+# CACHE BREAKER (majburiy)
+ARG CACHEBUST=1
+
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-rus \
@@ -11,11 +13,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Python deps
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Project files
 COPY . .
 
 ENV PYTHONUNBUFFERED=1
