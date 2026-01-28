@@ -1,5 +1,7 @@
 import logging
+import time
 
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -36,13 +38,13 @@ from .handlers.order import (
     handle_manual_amount,
     handle_manual_date,
     on_sales_channel_chosen,
-    on_paytype_chosen,      # NEW
+    on_paytype_chosen,
     STEP_TEXT,
     STEP_CHECK,
     STEP_AMOUNT,
     STEP_DATE,
     STEP_CHANNEL,
-    STEP_PAYTYPE,           # NEW
+    STEP_PAYTYPE,
     cancel as cancel_order,
 )
 
@@ -68,6 +70,7 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_auth)],
         allow_reentry=True,
+        per_message=True,
     )
     application.add_handler(register_conv)
 
@@ -80,6 +83,7 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_auth)],
         allow_reentry=True,
+        per_message=True,
     )
     application.add_handler(login_conv)
 
@@ -92,10 +96,11 @@ def build_app() -> Application:
             STEP_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount)],
             STEP_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_date)],
             STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
-            STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],  # NEW
+            STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
         allow_reentry=True,
+        per_message=True,  # ✅ CallbackQuery state tracking uchun
     )
     application.add_handler(order_conv)
 
@@ -105,8 +110,19 @@ def build_app() -> Application:
 def main():
     logger.info("🚀 Bot ishga tushmoqda...")
     init_db()
-    app = build_app()
-    app.run_polling()
+
+    while True:
+        try:
+            app = build_app()
+            app.run_polling(drop_pending_updates=True)
+            break
+        except Conflict:
+            # 409: boshqa joyda ham polling ishlayapti
+            logger.error("❌ 409 Conflict: boshqa joyda ham bot ishlayapti. 15s kutib qayta urinaman...")
+            time.sleep(15)
+        except Exception:
+            logger.exception("❌ Kutilmagan xato. 10s kutib qayta urinaman...")
+            time.sleep(10)
 
 
 if __name__ == "__main__":
