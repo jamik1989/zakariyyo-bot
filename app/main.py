@@ -1,5 +1,5 @@
+# app/main.py
 import logging
-import os
 
 from telegram.ext import (
     Application,
@@ -34,14 +34,12 @@ from .handlers.order import (
     kiritish_start,
     step_text,
     handle_check,
-    handle_manual_amount,
-    handle_manual_date,
+    handle_manual_amount_date,
     on_sales_channel_chosen,
     on_paytype_chosen,
     STEP_TEXT,
     STEP_CHECK,
-    STEP_AMOUNT,
-    STEP_DATE,
+    STEP_AMOUNT_DATE,
     STEP_CHANNEL,
     STEP_PAYTYPE,
     cancel as cancel_order,
@@ -59,70 +57,60 @@ def build_app() -> Application:
 
     application.add_handler(CommandHandler("start", start))
 
-    register_conv = ConversationHandler(
-        entry_points=[CommandHandler("register", register_start)],
-        states={
-            REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_phone)],
-            REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)],
-            REG_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_pass)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_auth)],
-        allow_reentry=True,
+    # REGISTER
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("register", register_start)],
+            states={
+                REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_phone)],
+                REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)],
+                REG_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_pass)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel_auth)],
+        )
     )
-    application.add_handler(register_conv)
 
-    login_conv = ConversationHandler(
-        entry_points=[CommandHandler("login", login_start)],
-        states={
-            LOG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_phone)],
-            LOG_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_pass)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_auth)],
-        allow_reentry=True,
+    # LOGIN
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("login", login_start)],
+            states={
+                LOG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_phone)],
+                LOG_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_pass)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel_auth)],
+        )
     )
-    application.add_handler(login_conv)
 
-    order_conv = ConversationHandler(
-        entry_points=[CommandHandler("kiritish", kiritish_start)],
-        states={
-            STEP_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, step_text)],
-            STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check)],
-            STEP_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount)],
-            STEP_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_date)],
-            STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
-            STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_order)],
-        allow_reentry=True,
+    # ORDER
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("kiritish", kiritish_start)],
+            states={
+                STEP_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, step_text)],
+                STEP_CHECK: [MessageHandler(filters.PHOTO, handle_check)],
+                STEP_AMOUNT_DATE: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)
+                ],
+                STEP_CHANNEL: [
+                    CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")
+                ],
+                STEP_PAYTYPE: [
+                    CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", cancel_order)],
+        )
     )
-    application.add_handler(order_conv)
 
     return application
 
 
 def main():
+    logger.info("🚀 Bot ishga tushmoqda (POLLING)...")
     init_db()
     app = build_app()
-
-    base = os.getenv("WEBHOOK_BASE", "").strip().rstrip("/")
-    if not base:
-        raise RuntimeError("WEBHOOK_BASE yo‘q. Railway Variables ga WEBHOOK_BASE qo‘ying.")
-
-    port = int(os.getenv("PORT", "8080"))
-
-    # Webhook URL: https://domain/telegram/<BOT_TOKEN>
-    webhook_path = f"/telegram/{BOT_TOKEN}"
-    webhook_url = f"{base}{webhook_path}"
-
-    logger.info(f"🚀 Webhook mode: {webhook_url} (port={port})")
-
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=webhook_path.lstrip("/"),
-        webhook_url=webhook_url,
-        drop_pending_updates=True,
-    )
+    app.run_polling(allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":

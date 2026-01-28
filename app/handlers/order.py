@@ -1,8 +1,8 @@
-# app/handlers/order.py  (OCR OFF)
+# app/handlers/order.py
 import re
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
@@ -10,7 +10,7 @@ from dateutil import parser as du_parser
 
 from ..config import GROUP_CHAT_ID
 from ..services.moysklad import (
-    get_or_create_project,   # xohlasa project yaratadi, lekin hujjatga yubormaymiz
+    get_or_create_project,   # project yaratib qo'yish mumkin (lekin hujjatga yubormaymiz)
     get_sales_channels,
     get_default_organization,
     get_or_create_counterparty,
@@ -21,7 +21,7 @@ from ..services.moysklad import (
 )
 
 # STATES
-STEP_TEXT, STEP_CHECK, STEP_AMOUNT, STEP_DATE, STEP_CHANNEL, STEP_PAYTYPE = range(6)
+STEP_TEXT, STEP_CHECK, STEP_AMOUNT_DATE, STEP_CHANNEL, STEP_PAYTYPE = range(5)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -30,6 +30,14 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------- phone helpers ----------------
 
 def _normalize_phone_uz(phone_raw: str) -> str:
+    """
+    Qabul qiladi:
+      - 919915252
+      - +998919915252
+      - 998919915252
+      - 91 991 52 52
+    Natija: +998XXXXXXXXX
+    """
     digits = re.sub(r"\D", "", phone_raw or "")
     if not digits:
         return ""
@@ -50,50 +58,57 @@ def _normalize_phone_uz(phone_raw: str) -> str:
 
 
 def _digits_only_phone(phone_plus: str) -> str:
+    """MoySklad uchun: faqat raqam."""
     return re.sub(r"\D", "", phone_plus or "")
 
 
-# ---------------- input helpers ----------------
+def _normalize_month_words(s: str) -> str:
+    x = s or ""
+    repl = {
+        "yan": "jan", "fev": "feb", "mart": "mar", "apr": "apr", "may": "may",
+        "iyun": "jun", "iyul": "jul", "avg": "aug", "sen": "sep", "okt": "oct",
+        "noy": "nov", "dek": "dec",
+    }
+    for k, v in repl.items():
+        x = re.sub(rf"\b{k}\b", v, x, flags=re.IGNORECASE)
+    return x
 
-def _parse_amount_uzs(text: str) -> Optional[int]:
+
+def _parse_amount_date_one_line(text: str) -> Tuple[Optional[int], Optional[str]]:
     """
-    Qabul qiladi:
-      600000
-      600 000
-      600,000
-      600.000
-      600000.00
-    Natija: int
+    Kutiladigan format:
+      600000-12.01.2026
+      600000 - 12.01.2026
+      600000/12.01.2026 (ixtiyoriy qo'shimcha)
+    Natija:
+      (600000, "2026-01-12")
     """
-    t = (text or "").strip()
-    if not t:
-        return None
-    digits = re.sub(r"[^\d]", "", t)
-    if not digits:
-        return None
+    s = (text or "").strip()
+
+    # separator: "-" yoki "/" yoki ","
+    m = re.match(r"^\s*([0-9][0-9\s.,]{2,20})\s*[-/,]\s*(.+?)\s*$", s)
+    if not m:
+        return None, None
+
+    amount_raw = m.group(1)
+    date_raw = m.group(2)
+
+    # amount: faqat raqam
+    amount_digits = re.sub(r"\D", "", amount_raw)
+    if not amount_digits:
+        return None, None
+    amount = int(amount_digits)
+    if amount <= 0:
+        return None, None
+
+    # date: parse
     try:
-        val = int(digits)
-        return val if val > 0 else None
+        dt = du_parser.parse(_normalize_month_words(date_raw), dayfirst=True, fuzzy=True)
+        date_iso = dt.date().isoformat()
     except Exception:
-        return None
+        return None, None
 
-
-def _parse_date_iso(text: str) -> Optional[str]:
-    """
-    Qabul qiladi:
-      28.01.2026
-      28/01/2026
-      2026-01-28
-      28-01-2026
-    """
-    raw = (text or "").strip()
-    if not raw:
-        return None
-    try:
-        dt = du_parser.parse(raw, dayfirst=True, fuzzy=True)
-        return dt.date().isoformat()
-    except Exception:
-        return None
+    return amount, date_iso
 
 
 # ---------------- Conversation flow ----------------
@@ -138,7 +153,7 @@ async def step_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["order"] = {
         "brand": brand_norm,
-        "project_meta": project.get("meta") if project else None,
+        "project_meta": project.get("meta") if project else None,  # hujjatga yubormaymiz
         "client_name": client_name,
         "phone_plus": phone_plus,
         "phone_digits": _digits_only_phone(phone_plus),
@@ -162,7 +177,7 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg.document.mime_type == "application/pdf"
         or (msg.document.file_name or "").lower().endswith(".pdf")
     ):
-        await msg.reply_text("📄 Hozircha faqat foto qabul qilinadi. Iltimos, chekni rasm qilib yuboring.")
+        await msg.reply_text("📄 Hozircha PDF qabul qilmaymiz. Iltimos, chekni foto qilib yuboring.")
         return STEP_CHECK
 
     if not msg.photo:
@@ -174,35 +189,29 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(str(img_path))
     context.user_data["check_path"] = str(img_path)
 
-    # ✅ OCR OFF: endi qo'lda so'raymiz
     await msg.reply_text(
-        "💰 Summani kiriting (faqat raqam):\n"
-        "Masalan: 600000"
+        "✅ Chek qabul qilindi.\n"
+        "💰 Summani va 📅 sanani bitta xabarda kiriting:\n"
+        "Masalan: 600000-28.01.2026"
     )
-    return STEP_AMOUNT
+    return STEP_AMOUNT_DATE
 
 
-async def handle_manual_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = _parse_amount_uzs(update.message.text or "")
-    if val is None:
-        await update.message.reply_text("❌ Summa xato. Faqat raqam kiriting. Masalan: 600000")
-        return STEP_AMOUNT
+async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text or ""
+    amount, date_iso = _parse_amount_date_one_line(text)
 
-    context.user_data["amount_uzs"] = val
-    await update.message.reply_text(
-        "📅 Sanani kiriting (dd.mm.yyyy):\n"
-        "Masalan: 28.01.2026"
-    )
-    return STEP_DATE
+    if amount is None or date_iso is None:
+        await update.message.reply_text(
+            "❌ Format noto‘g‘ri.\n"
+            "Iltimos bitta xabarda shunday yozing:\n"
+            "600000-28.01.2026"
+        )
+        return STEP_AMOUNT_DATE
 
+    context.user_data["amount_uzs"] = int(amount)
+    context.user_data["date_iso"] = str(date_iso)
 
-async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date_iso = _parse_date_iso(update.message.text or "")
-    if not date_iso:
-        await update.message.reply_text("❌ Sana formati noto‘g‘ri. Qayta kiriting (dd.mm.yyyy):")
-        return STEP_DATE
-
-    context.user_data["date_iso"] = date_iso
     return await ask_sales_channel(update.message, context)
 
 
@@ -273,7 +282,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         org = get_default_organization()
 
-        # ✅ Контрагент nomi: "BRAND Mijoz"
+        # ✅ TALAB: Контрагент nomi: "BRAND Mijoz"
         cp_name = f"{order.get('brand')} {order.get('client_name')}".strip()
         cp_phone_digits = str(order.get("phone_digits") or "").strip()
         cp = get_or_create_counterparty(cp_name, phone=cp_phone_digits)
@@ -283,7 +292,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Operator: {operator.get('name')} ({operator.get('phone')})"
         )
 
-        # ✅ project yuborilmaydi
+        # ✅ MUHIM: payloadga "project" qo‘ymaymiz -> Проект bo‘sh qoladi
         if pt == "card":
             created = create_paymentin(
                 organization_meta=org["meta"],
