@@ -1,7 +1,7 @@
 import logging
-import time
+import os
 
-from telegram.error import Conflict
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -55,8 +55,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def on_error(update: object, context):
+    # Conflict bo‘lsa ham process yiqilib ketmasin
+    logger.exception("Unhandled error: %s", context.error)
+
+
 def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
+    application.add_error_handler(on_error)
 
     application.add_handler(CommandHandler("start", start))
 
@@ -70,7 +76,6 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_auth)],
         allow_reentry=True,
-        per_message=True,
     )
     application.add_handler(register_conv)
 
@@ -83,7 +88,6 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_auth)],
         allow_reentry=True,
-        per_message=True,
     )
     application.add_handler(login_conv)
 
@@ -100,7 +104,6 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
         allow_reentry=True,
-        per_message=True,  # ✅ CallbackQuery state tracking uchun
     )
     application.add_handler(order_conv)
 
@@ -110,19 +113,30 @@ def build_app() -> Application:
 def main():
     logger.info("🚀 Bot ishga tushmoqda...")
     init_db()
+    app = build_app()
 
-    while True:
-        try:
-            app = build_app()
-            app.run_polling(drop_pending_updates=True)
-            break
-        except Conflict:
-            # 409: boshqa joyda ham polling ishlayapti
-            logger.error("❌ 409 Conflict: boshqa joyda ham bot ishlayapti. 15s kutib qayta urinaman...")
-            time.sleep(15)
-        except Exception:
-            logger.exception("❌ Kutilmagan xato. 10s kutib qayta urinaman...")
-            time.sleep(10)
+    # ✅ Railway uchun webhook
+    webhook_url = os.getenv("WEBHOOK_URL", "").strip()  # masalan: https://zakariyyo-bot.up.railway.app
+    port = int(os.getenv("PORT", "8080"))
+
+    if webhook_url:
+        # URL path ni token bilan qilamiz (oddiy va xavfsiz)
+        url_path = BOT_TOKEN
+        full_webhook = f"{webhook_url.rstrip('/')}/{url_path}"
+
+        logger.info("🌐 Webhook mode: %s", full_webhook)
+
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=url_path,
+            webhook_url=full_webhook,
+            drop_pending_updates=True,
+        )
+    else:
+        # fallback: lokal uchun polling
+        logger.info("📡 Polling mode")
+        app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
