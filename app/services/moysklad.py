@@ -81,29 +81,6 @@ def get_default_organization() -> Dict[str, Any]:
     return rows[0]
 
 
-# ================= PROJECT (BREND) =================
-
-def get_or_create_project(brand_raw: str) -> Dict[str, Any]:
-    """
-    Brendni Project sifatida topadi yoki yaratadi.
-    Tavsiya: search ishlatamiz (filter name=... ba'zan noaniq bo'ladi).
-    """
-    brand = " ".join((brand_raw or "").strip().upper().split())
-    if not brand:
-        raise ValueError("Brend nomi bo‘sh bo‘lmasligi kerak.")
-
-    data = ms_get("/entity/project", params={"search": brand, "limit": 1})
-    rows = data.get("rows", [])
-    if rows:
-        # Aynan mosini birinchi o'ringa chiqarish
-        for r in rows:
-            if (r.get("name") or "").strip().upper() == brand:
-                return r
-        return rows[0]
-
-    return ms_post("/entity/project", {"name": brand})
-
-
 # ================= SALES CHANNEL =================
 
 def get_sales_channels(limit: int = 50) -> List[Dict[str, Any]]:
@@ -185,7 +162,6 @@ def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[s
 def create_paymentin(
     organization_meta: Dict[str, Any],
     agent_meta: Dict[str, Any],
-    project_meta: Optional[Dict[str, Any]],  # moslik uchun qoldirdik, payloadga qo‘shmaymiz
     sales_channel_meta: Dict[str, Any],
     sum_uzs: int,
     date_iso: str,
@@ -193,7 +169,7 @@ def create_paymentin(
 ) -> Dict[str, Any]:
     """
     Входящий платёж (karta).
-    Talabga ko‘ra 'project' to‘ldirilmaydi.
+    ✅ TALAB: 'project' umuman yuborilmasin.
     """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
@@ -201,12 +177,15 @@ def create_paymentin(
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
-        # "project": {"meta": project_meta},  # ❌ TALAB: 'Проект' bo‘sh qolishi kerak
         "salesChannel": {"meta": sales_channel_meta},
         "sum": int(sum_uzs) * 100,
         "moment": f"{date_iso} 00:00:00",
         "description": description,
     }
+
+    # ✅ Qattiq himoya: tasodifan qo‘shilib qolsa ham olib tashlaymiz
+    payload.pop("project", None)
+
     return ms_post("/entity/paymentin", payload)
 
 
@@ -215,7 +194,6 @@ def create_paymentin(
 def create_cashin(
     organization_meta: Dict[str, Any],
     agent_meta: Dict[str, Any],
-    project_meta: Optional[Dict[str, Any]],  # moslik uchun qoldirdik, payloadga qo‘shmaymiz
     sales_channel_meta: Dict[str, Any],
     sum_uzs: int,
     date_iso: str,
@@ -223,7 +201,7 @@ def create_cashin(
 ) -> Dict[str, Any]:
     """
     Приходный ордер (naqt).
-    Talabga ko‘ra 'project' to‘ldirilmaydi.
+    ✅ TALAB: 'project' umuman yuborilmasin.
     """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
@@ -231,12 +209,15 @@ def create_cashin(
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
-        # "project": {"meta": project_meta},  # ❌ TALAB: 'Проект' bo‘sh qolishi kerak
         "salesChannel": {"meta": sales_channel_meta},
         "sum": int(sum_uzs) * 100,
         "moment": f"{date_iso} 00:00:00",
         "description": description,
     }
+
+    # ✅ Qattiq himoya
+    payload.pop("project", None)
+
     return ms_post("/entity/cashin", payload)
 
 
@@ -265,7 +246,6 @@ def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[D
             r.raise_for_status()
             return r.json() if r.text else {"ok": True}
     except Exception as e:
-        # best-effort, lekin log qoldiramiz
         logger.warning("File attach failed: entity=%s id=%s file=%s err=%s", entity, doc_id, file_path, e)
         return None
 
@@ -283,7 +263,6 @@ def attach_file_to_cashin(cashin_id: str, file_path: str) -> Optional[Dict[str, 
 def create_incoming_payment(
     organization_meta: Dict[str, Any],
     agent_meta: Dict[str, Any],
-    project_meta: Optional[Dict[str, Any]],
     sales_channel_meta: Dict[str, Any],
     sum_uzs: int,
     date_iso: str,
@@ -291,11 +270,11 @@ def create_incoming_payment(
 ) -> Dict[str, Any]:
     """
     Eski nom bilan import bo‘lsa ham ishlayveradi (karta -> paymentin).
+    ✅ project parametri butunlay olib tashlandi.
     """
     return create_paymentin(
         organization_meta=organization_meta,
         agent_meta=agent_meta,
-        project_meta=project_meta,
         sales_channel_meta=sales_channel_meta,
         sum_uzs=sum_uzs,
         date_iso=date_iso,

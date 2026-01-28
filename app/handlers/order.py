@@ -2,7 +2,7 @@
 import re
 import os
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
@@ -10,7 +10,7 @@ from dateutil import parser as du_parser
 
 from ..config import GROUP_CHAT_ID
 from ..services.moysklad import (
-    get_or_create_project,   # project yaratib qo'yish mumkin (lekin hujjatga yubormaymiz)
+    # ⚠️ Project umuman ishlatilmaydi (Проект bo‘limi bo‘sh qolishi kerak)
     get_sales_channels,
     get_default_organization,
     get_or_create_counterparty,
@@ -79,7 +79,8 @@ def _parse_amount_date_one_line(text: str) -> Tuple[Optional[int], Optional[str]
     Kutiladigan format:
       600000-12.01.2026
       600000 - 12.01.2026
-      600000/12.01.2026 (ixtiyoriy qo'shimcha)
+      600000/12.01.2026
+      600000,12.01.2026
     Natija:
       (600000, "2026-01-12")
     """
@@ -143,18 +144,13 @@ async def step_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Telefon noto‘g‘ri. Masalan: +998901234567 yoki 901234567")
         return STEP_TEXT
 
-    # project yaratishni saqlab qolamiz (xohlasa), lekin hujjatga qo‘ymaymiz.
-    try:
-        project = get_or_create_project(brand_raw)
-        brand_norm = project.get("name") or " ".join(brand_raw.strip().upper().split())
-    except Exception:
-        brand_norm = " ".join(brand_raw.strip().upper().split())
-        project = None
+    # ✅ TALAB: 'Проект' bo‘limiga hech narsa bormasin
+    # Shuning uchun project yaratish/izlashni butunlay olib tashlaymiz.
+    brand_norm = " ".join((brand_raw or "").strip().upper().split()) or brand_raw.strip()
 
     context.user_data["order"] = {
         "brand": brand_norm,
-        "project_meta": project.get("meta") if project else None,  # hujjatga yubormaymiz
-        "client_name": client_name,
+        "client_name": (client_name or "").strip(),
         "phone_plus": phone_plus,
         "phone_digits": _digits_only_phone(phone_plus),
     }
@@ -262,8 +258,8 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pt not in ("cash", "card"):
         return STEP_PAYTYPE
 
-    order = context.user_data.get("order", {})
-    operator = context.user_data.get("operator", {})
+    order: Dict[str, Any] = context.user_data.get("order", {})
+    operator: Dict[str, Any] = context.user_data.get("operator", {})
     amount = int(context.user_data.get("amount_uzs") or 0)
     date_iso = str(context.user_data.get("date_iso") or "")
     sc_meta = context.user_data.get("sales_channel_meta")
@@ -292,12 +288,11 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Operator: {operator.get('name')} ({operator.get('phone')})"
         )
 
-        # ✅ MUHIM: payloadga "project" qo‘ymaymiz -> Проект bo‘sh qoladi
+        # ✅ MUHIM: create_paymentin/create_cashin endi project qabul qilmaydi.
         if pt == "card":
             created = create_paymentin(
                 organization_meta=org["meta"],
                 agent_meta=cp["meta"],
-                project_meta=None,
                 sales_channel_meta=sc_meta,
                 sum_uzs=amount,
                 date_iso=date_iso,
@@ -310,7 +305,6 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             created = create_cashin(
                 organization_meta=org["meta"],
                 agent_meta=cp["meta"],
-                project_meta=None,
                 sales_channel_meta=sc_meta,
                 sum_uzs=amount,
                 date_iso=date_iso,
