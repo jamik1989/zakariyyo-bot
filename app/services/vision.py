@@ -15,8 +15,6 @@ class VisionError(RuntimeError):
     pass
 
 
-# ================= CLIENT =================
-
 def _build_client() -> vision.ImageAnnotatorClient:
     if not GCP_SA_JSON:
         raise VisionError(
@@ -41,13 +39,7 @@ def _client() -> vision.ImageAnnotatorClient:
     return _CLIENT
 
 
-# ================= OCR TEXT =================
-
 def extract_text(image_path: str) -> str:
-    """
-    Cheklar uchun avval document_text_detection,
-    fallback sifatida text_detection.
-    """
     with open(image_path, "rb") as f:
         content = f.read()
 
@@ -70,14 +62,9 @@ def extract_text(image_path: str) -> str:
     return resp2.text_annotations[0].description or ""
 
 
-# ================= AMOUNT =================
+# ---------- AMOUNT ----------
 
 def _find_amount_uzs(text: str) -> Optional[int]:
-    """
-    Faqat valuta qatordagi summani oladi:
-    so'm / uzs / сум / итого / jami / total
-    Karta raqamlari, RRN, ID lar inkor qilinadi.
-    """
     if not text:
         return None
 
@@ -87,7 +74,6 @@ def _find_amount_uzs(text: str) -> Optional[int]:
         "so'm", "som", "сум", "сўм", "uzs",
         "итого", "итог", "jami", "total", "amount", "summa"
     ]
-
     BLOCK_WORDS = [
         "card", "карта", "pan", "auth", "rrn",
         "terminal", "терминал", "qr", "id",
@@ -95,7 +81,6 @@ def _find_amount_uzs(text: str) -> Optional[int]:
     ]
 
     def parse_amount(raw: str) -> Optional[int]:
-        # 400.000 / 400 000 / 400,000 → 400000
         digits = re.sub(r"[^\d]", "", raw)
         if not digits:
             return None
@@ -104,13 +89,11 @@ def _find_amount_uzs(text: str) -> Optional[int]:
             return val
         return None
 
-    # 1️⃣ ENG ISHONCHLI: valuta so‘zi bor qator
+    # 1) valuta qatordan
     for line in lines:
         low = line.lower()
-
         if any(w in low for w in BLOCK_WORDS):
             continue
-
         if any(w in low for w in CURRENCY_WORDS):
             nums = re.findall(r"\d[\d\s.,]{2,20}", line)
             values = [parse_amount(n) for n in nums]
@@ -118,52 +101,100 @@ def _find_amount_uzs(text: str) -> Optional[int]:
             if values:
                 return max(values)
 
-    # 2️⃣ Fallback (kamdan-kam ishlaydi)
+    # 2) fallback
     candidates = []
     for m in re.finditer(r"(?<!\d)(\d[\d\s.,]{2,20})(?!\d)", text):
         val = parse_amount(m.group(1))
         if val:
             candidates.append(val)
 
-    if not candidates:
-        return None
-
-    return max(candidates)
+    return max(candidates) if candidates else None
 
 
-# ================= DATE =================
+# ---------- DATE + TIME ----------
 
-def _find_date(text: str) -> Optional[str]:
-    """
-    Sana formatlari:
-    28.01.2026 / 28-01-2026 / 28/01/26
-    """
-    if not text:
-        return None
+_DATE_WORDS = [
+    "sana", "date", "дата", "vaqt", "time", "время",
+    "chek", "чек", "receipt", "kvитан", "квитан"
+]
 
-    m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", text)
+def _parse_date_from_fragment(fragment: str) -> Optional[str]:
+    # dd.mm.yyyy | dd/mm/yyyy | dd-mm-yyyy | dd.mm.yy
+    m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", fragment)
     if not m:
         return None
-
     d = int(m.group(1))
     mo = int(m.group(2))
     y = int(m.group(3))
     if y < 100:
         y += 2000
-
     try:
         return date(y, mo, d).isoformat()
     except Exception:
         return None
 
+def _parse_time_hm(fragment: str) -> Optional[str]:
+    # HH:MM yoki H:MM
+    m = re.search(r"\b([01]?\d|2[0-3])[:\.]([0-5]\d)\b", fragment)
+    if not m:
+        return None
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    return f"{hh:02d}:{mm:02d}"
 
-# ================= MAIN =================
+def _find_date_and_time(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Qaytaradi: (date_iso, time_hm)
+    - Avval 'sana/date/дата' kabi so'zli qatorlardan qidiradi
+    - Keyin fallback: butun tekst ichidan
+    """
+    if not text:
+        return None, None
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    # 1) so'zli qatorlardan
+    for line in lines:
+        low = line.lower()
+        if any(w in low for w in _DATE_WORDS):
+            dt = _parse_date_from_fragment(line)
+            tm = _parse_time_hm(line)
+            if dt or tm:
+                return dt, tm
+
+    # 2) qator+yonidagi qatorlarni ham tekshirish (ko‘p cheklarda sana alohida qatorda bo‘ladi)
+    for i, line in enumerate(lines):
+        dt = _parse_date_from_fragment(line)
+        tm = _parse_time_hm(line)
+        if dt or tm:
+            # ehtimol sana boshqa qatorda, vaqt boshqa qatorda bo‘ladi
+            if not dt and i > 0:
+                dt = _parse_date_from_fragment(lines[i - 1]) or dt
+            if not dt and i + 1 < len(lines):
+                dt = _parse_date_from_fragment(lines[i + 1]) or dt
+
+            if not tm and i > 0:
+                tm = _parse_time_hm(lines[i - 1]) or tm
+            if not tm and i + 1 < len(lines):
+                tm = _parse_time_hm(lines[i + 1]) or tm
+
+            return dt, tm
+
+    # 3) fallback: butun text
+    dt = _parse_date_from_fragment(text)
+    tm = _parse_time_hm(text)
+    return dt, tm
+
 
 def detect_amount_and_date(image_path: str) -> Tuple[Optional[int], Optional[str], str]:
     """
     returns: (amount_uzs, date_iso, raw_text)
+    time_hm kerak bo‘lsa: contextga o‘zingiz saqlaysiz (order.py da)
     """
     raw = extract_text(image_path)
     amount = _find_amount_uzs(raw)
-    dt = _find_date(raw)
+    dt, tm = _find_date_and_time(raw)
+
+    # ixtiyoriy: vaqtni rawga qo‘shimcha saqlash uchun qulay
+    # order.py da time_hm ni alohida contextga saqlaymiz
     return amount, dt, raw
