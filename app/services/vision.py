@@ -19,8 +19,12 @@ class VisionError(RuntimeError):
 
 def _build_client() -> vision.ImageAnnotatorClient:
     if not GCP_SA_JSON:
-        raise VisionError("GCP_SA_JSON topilmadi. Railway Variables ga GCP_SA_JSON qo‘ying.")
-    info = json.loads(GCP_SA_JSON)
+        raise VisionError("GCP_SA_JSON topilmadi. Railway Variables ga GCP_SA_JSON qo‘ying (service account JSON matni).")
+    try:
+        info = json.loads(GCP_SA_JSON)
+    except Exception as e:
+        raise VisionError(f"GCP_SA_JSON JSON emas yoki buzilgan: {e}")
+
     creds = service_account.Credentials.from_service_account_info(info)
     return vision.ImageAnnotatorClient(credentials=creds)
 
@@ -36,28 +40,44 @@ def _client() -> vision.ImageAnnotatorClient:
 
 
 def extract_text(image_path: str) -> str:
+    """
+    Chek/kvитанция uchun avval document_text_detection (aniqroq),
+    agar bo‘lmasa text_detection fallback.
+    """
     with open(image_path, "rb") as f:
         content = f.read()
 
     image = vision.Image(content=content)
-    resp = _client().text_detection(image=image)
-    if resp.error and resp.error.message:
-        raise VisionError(resp.error.message)
 
-    if not resp.text_annotations:
+    # 1) document_text_detection (cheklar uchun yaxshi)
+    resp = _client().document_text_detection(image=image)
+    if resp.error and resp.error.message:
+        # fallback qilamiz
+        doc_err = resp.error.message
+    else:
+        doc_err = None
+
+    if not doc_err:
+        if resp.full_text_annotation and resp.full_text_annotation.text:
+            return resp.full_text_annotation.text or ""
+        # ba'zan full_text_annotation bo'sh bo'lishi mumkin
+        # fallback qilsin
+        doc_err = "document_text_detection returned empty"
+
+    # 2) fallback: text_detection
+    resp2 = _client().text_detection(image=image)
+    if resp2.error and resp2.error.message:
+        raise VisionError(resp2.error.message)
+
+    if not resp2.text_annotations:
         return ""
 
-    # [0] = full text
-    return resp.text_annotations[0].description or ""
+    return resp2.text_annotations[0].description or ""
 
 
 def _find_amount_uzs(text: str) -> Optional[int]:
     """
-    Ko‘pincha cheklarda:
-      600 000
-      600000
-      600,000
-      600.000
+    Cheklarda summalar turlicha bo'ladi: 600 000 / 600000 / 600,000 / 600.000
     Eng katta mantiqiy summani olamiz.
     """
     if not text:
@@ -70,12 +90,13 @@ def _find_amount_uzs(text: str) -> Optional[int]:
         if not digits:
             continue
         val = int(digits)
-        # filtr: juda kichik yoki juda katta bo'lmasin (ixtiyoriy)
+        # filtr: juda kichik yoki juda katta bo'lmasin
         if 1000 <= val <= 500_000_000:
             candidates.append(val)
 
     if not candidates:
         return None
+
     return max(candidates)
 
 
@@ -90,7 +111,6 @@ def _find_date(text: str) -> Optional[str]:
     if not text:
         return None
 
-    # dd.mm.yyyy yoki dd.mm.yy
     m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", text)
     if not m:
         return None
@@ -102,15 +122,14 @@ def _find_date(text: str) -> Optional[str]:
         y += 2000
 
     try:
-        iso = date(y, mo, d).isoformat()
+        return date(y, mo, d).isoformat()
     except Exception:
         return None
-    return iso
 
 
 def detect_amount_and_date(image_path: str) -> Tuple[Optional[int], Optional[str], str]:
     """
-    returns: amount_uzs, date_iso, raw_text
+    returns: (amount_uzs, date_iso, raw_text)
     """
     raw = extract_text(image_path)
     amount = _find_amount_uzs(raw)
