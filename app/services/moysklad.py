@@ -154,7 +154,9 @@ def create_paymentin(
 ) -> Dict[str, Any]:
     """
     Входящий платёж (karta).
-    ✅ TALAB: 'project' umuman yuborilmaydi (Проект bo‘sh qoladi).
+    ✅ TALAB:
+      - 'project' yuborilmaydi (Проект bo‘sh)
+      - Hujjat 'Черновик' bo‘lsin -> applicable=false
     """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
@@ -166,6 +168,9 @@ def create_paymentin(
         "sum": int(sum_uzs) * 100,
         "moment": f"{date_iso} 00:00:00",
         "description": description,
+
+        # ✅ DRAFT / НЕ ПРОВЕДЕН
+        "applicable": False,
     }
     return ms_post("/entity/paymentin", payload)
 
@@ -182,7 +187,9 @@ def create_cashin(
 ) -> Dict[str, Any]:
     """
     Приходный ордер (naqt).
-    ✅ TALAB: 'project' umuman yuborilmaydi (Проект bo‘sh qoladi).
+    ✅ TALAB:
+      - 'project' yuborilmaydi (Проект bo‘sh)
+      - Hujjat 'Черновик' bo‘lsin -> applicable=false
     """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
@@ -194,6 +201,9 @@ def create_cashin(
         "sum": int(sum_uzs) * 100,
         "moment": f"{date_iso} 00:00:00",
         "description": description,
+
+        # ✅ DRAFT / НЕ ПРОВЕДЕН
+        "applicable": False,
     }
     return ms_post("/entity/cashin", payload)
 

@@ -4,7 +4,13 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from telegram.ext import ContextTypes, ConversationHandler
 from dateutil import parser as du_parser
 
@@ -26,17 +32,27 @@ TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ---------------- UI helpers ----------------
+
+def _menu_keyboard() -> ReplyKeyboardMarkup:
+    """
+    ✅ Yakunda foydalanuvchiga menu chiqaramiz.
+    /kiritish tugmasi keyingi buyurtma uchun qulay.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("/kiritish")],
+            [KeyboardButton("/start")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        selective=True,
+    )
+
+
 # ---------------- phone helpers ----------------
 
 def _normalize_phone_uz(phone_raw: str) -> str:
-    """
-    Qabul qiladi:
-      - 919915252
-      - +998919915252
-      - 998919915252
-      - 91 991 52 52
-    Natija: +998XXXXXXXXX
-    """
     digits = re.sub(r"\D", "", phone_raw or "")
     if not digits:
         return ""
@@ -57,7 +73,6 @@ def _normalize_phone_uz(phone_raw: str) -> str:
 
 
 def _digits_only_phone(phone_plus: str) -> str:
-    """MoySklad uchun: faqat raqam."""
     return re.sub(r"\D", "", phone_plus or "")
 
 
@@ -108,7 +123,6 @@ def _parse_amount_date_one_line(text: str) -> Tuple[Optional[int], Optional[str]
 
 
 def _norm_brand(brand_raw: str) -> str:
-    """✅ Project umuman ishlatmaymiz. Faqat brend nomini tozalaymiz."""
     return " ".join((brand_raw or "").strip().upper().split())
 
 
@@ -125,7 +139,8 @@ async def kiritish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Misol:\n"
         "NIKE-Azamat-+998919915252\n"
         "yoki:\n"
-        "NIKE-Azamat-919915252"
+        "NIKE-Azamat-919915252",
+        reply_markup=_menu_keyboard(),
     )
     return STEP_TEXT
 
@@ -282,7 +297,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Operator: {operator.get('name')} ({operator.get('phone')})"
         )
 
-        # ✅ MUHIM: PROJECT umuman yuborilmaydi (Проект bo‘sh)
+        # ✅ PROJECT umuman yuborilmaydi (Проект bo‘sh)
         if pt == "card":
             created = create_paymentin(
                 organization_meta=org["meta"],
@@ -314,6 +329,13 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🆔 ID: {created.get('id','N/A')}"
         )
 
+        # ✅ YAKUN: foydalanuvchiga menu chiqaramiz (keyingi buyurtma uchun /kiritish)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✅ Tayyor. Keyingi buyurtma uchun /kiritish ni bosing.",
+            reply_markup=_menu_keyboard(),
+        )
+
         if GROUP_CHAT_ID:
             caption = (
                 f"✅ {doc_kind}\n\n"
@@ -335,9 +357,15 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
         return ConversationHandler.END
 
+    # (ixtiyoriy) cleanup
+    context.user_data.pop("check_path", None)
+    context.user_data.pop("ocr_text", None)
+    context.user_data.pop("amount_uzs", None)
+    context.user_data.pop("date_iso", None)
+
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bekor qilindi.")
+    await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
