@@ -24,9 +24,10 @@ from ..services.moysklad import (
     attach_file_to_paymentin,
     attach_file_to_cashin,
 )
+from ..services.vision import detect_amount_and_date
 
-# STATES
-STEP_TEXT, STEP_CHECK, STEP_AMOUNT_DATE, STEP_CHANNEL, STEP_PAYTYPE = range(5)
+# STATES (main.py dagi tartib bilan mos bo‘lsin!)
+STEP_TEXT, STEP_CHECK, STEP_REVIEW, STEP_AMOUNT_DATE, STEP_PAYTYPE, STEP_CHANNEL = range(6)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,10 +36,6 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------- UI helpers ----------------
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
-    """
-    ✅ Yakunda foydalanuvchiga menu chiqaramiz.
-    /kiritish tugmasi keyingi buyurtma uchun qulay.
-    """
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton("/kiritish")],
@@ -50,7 +47,15 @@ def _menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-# ---------------- phone helpers ----------------
+def _review_keyboard() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("✅ Tasdiq", callback_data="rv:confirm")],
+        [InlineKeyboardButton("✏️ Tuzatish", callback_data="rv:edit")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+# ---------------- helpers ----------------
 
 def _normalize_phone_uz(phone_raw: str) -> str:
     digits = re.sub(r"\D", "", phone_raw or "")
@@ -59,16 +64,12 @@ def _normalize_phone_uz(phone_raw: str) -> str:
 
     if len(digits) == 9:
         return "+998" + digits
-
     if len(digits) == 12 and digits.startswith("998"):
         return "+" + digits
-
     if len(digits) > 12:
         return "+998" + digits[-9:]
-
     if 9 < len(digits) < 12:
         return "+998" + digits[-9:]
-
     return "+" + digits
 
 
@@ -89,14 +90,6 @@ def _normalize_month_words(s: str) -> str:
 
 
 def _parse_amount_date_one_line(text: str) -> Tuple[Optional[int], Optional[str]]:
-    """
-    Kutiladigan format:
-      600000-12.01.2026
-      600000 - 12.01.2026
-      600000/12.01.2026
-    Natija:
-      (600000, "2026-01-12")
-    """
     s = (text or "").strip()
     m = re.match(r"^\s*([0-9][0-9\s.,]{2,20})\s*[-/,]\s*(.+?)\s*$", s)
     if not m:
@@ -200,12 +193,68 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(str(img_path))
     context.user_data["check_path"] = str(img_path)
 
+    # ✅ Google Vision OCR
+    try:
+        amount, date_iso, raw_text = detect_amount_and_date(str(img_path))
+    except Exception as e:
+        await msg.reply_text(
+            f"❌ OCR xatolik: {e}\n\n"
+            "💰 Summani va 📅 sanani qo‘lda bitta xabarda kiriting:\n"
+            "Masalan: 600000-28.01.2026"
+        )
+        return STEP_AMOUNT_DATE
+
+    context.user_data["amount_uzs"] = amount
+    context.user_data["date_iso"] = date_iso
+    context.user_data["ocr_text"] = raw_text
+
+    # agar topolmasa ham review chiqaramiz (foydalanuvchi tuzatadi)
+    a_show = f"{amount:,} UZS" if isinstance(amount, int) else "TOPILMADI"
+    d_show = date_iso or "TOPILMADI"
+
     await msg.reply_text(
-        "✅ Chek qabul qilindi.\n"
-        "💰 Summani va 📅 sanani bitta xabarda kiriting:\n"
-        "Masalan: 600000-28.01.2026"
+        "✅ Chek o‘qildi (Google Vision).\n\n"
+        f"💵 Summa: {a_show}\n"
+        f"📅 Sana: {d_show}\n\n"
+        "To‘g‘rimi?",
+        reply_markup=_review_keyboard(),
     )
-    return STEP_AMOUNT_DATE
+    return STEP_REVIEW
+
+
+async def on_ocr_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    action = (query.data or "").split("rv:", 1)[-1]
+
+    if action == "edit":
+        await query.edit_message_text(
+            "✏️ Qo‘lda kiriting (bitta xabarda):\n"
+            "Masalan: 600000-28.01.2026"
+        )
+        return STEP_AMOUNT_DATE
+
+    if action != "confirm":
+        return STEP_REVIEW
+
+    # confirm bosilganda amount/date bo‘lishi kerak
+    amount = context.user_data.get("amount_uzs")
+    date_iso = context.user_data.get("date_iso")
+    if not isinstance(amount, int) or amount <= 0 or not date_iso:
+        await query.edit_message_text(
+            "❌ OCR summa/sanani topolmadi.\n"
+            "Iltimos tuzatishni bosing va qo‘lda kiriting."
+        )
+        return STEP_REVIEW
+
+    # keyingi qadam: to‘lov turi
+    kb = [
+        [InlineKeyboardButton("💵 Naqt", callback_data="pt:cash")],
+        [InlineKeyboardButton("💳 Karta", callback_data="pt:card")],
+    ]
+    await query.edit_message_text("To‘lov turini tanlang:", reply_markup=InlineKeyboardMarkup(kb))
+    return STEP_PAYTYPE
 
 
 async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,25 +272,41 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
     context.user_data["amount_uzs"] = int(amount)
     context.user_data["date_iso"] = str(date_iso)
 
-    return await ask_sales_channel(update.message, context)
+    # qo‘lda kiritgandan keyin: to‘lov turi
+    kb = [
+        [InlineKeyboardButton("💵 Naqt", callback_data="pt:cash")],
+        [InlineKeyboardButton("💳 Karta", callback_data="pt:card")],
+    ]
+    await update.message.reply_text("To‘lov turini tanlang:", reply_markup=InlineKeyboardMarkup(kb))
+    return STEP_PAYTYPE
 
 
-async def ask_sales_channel(message, context: ContextTypes.DEFAULT_TYPE):
+async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    pt = (query.data or "").split("pt:", 1)[-1]
+    if pt not in ("cash", "card"):
+        return STEP_PAYTYPE
+
+    context.user_data["paytype"] = pt
+
+    # keyingi qadam: sales channel tanlash
     try:
         channels = get_sales_channels(limit=50)
     except Exception as e:
-        await message.reply_text(f"❌ Kanal olishda xatolik: {e}")
+        await query.edit_message_text(f"❌ Kanal olishda xatolik: {e}")
         return ConversationHandler.END
 
     if not channels:
-        await message.reply_text("❌ MoySklad’da 'канал продаж' topilmadi. Avval sales channel yarating.")
+        await query.edit_message_text("❌ MoySklad’da 'канал продаж' topilmadi. Avval sales channel yarating.")
         return ConversationHandler.END
 
     channels = channels[:10]
     context.user_data["channels_map"] = {c["id"]: c["meta"] for c in channels}
 
     keyboard = [[InlineKeyboardButton(c["name"], callback_data=f"sc:{c['id']}")] for c in channels]
-    await message.reply_text("📊 Kanal prodaj (канал продаж) ni tanlang:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text("📊 Kanal prodaj (канал продаж) ni tanlang:", reply_markup=InlineKeyboardMarkup(keyboard))
     return STEP_CHANNEL
 
 
@@ -255,39 +320,20 @@ async def on_sales_channel_chosen(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("❌ Kanal topilmadi. Qaytadan /kiritish qiling.")
         return ConversationHandler.END
 
-    context.user_data["sales_channel_meta"] = sc_meta
-
-    kb = [
-        [InlineKeyboardButton("💵 Naqt", callback_data="pt:cash")],
-        [InlineKeyboardButton("💳 Karta", callback_data="pt:card")],
-    ]
-    await query.edit_message_text("To‘lov turini tanlang:", reply_markup=InlineKeyboardMarkup(kb))
-    return STEP_PAYTYPE
-
-
-async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    pt = (query.data or "").split("pt:", 1)[-1]
-    if pt not in ("cash", "card"):
-        return STEP_PAYTYPE
-
     order = context.user_data.get("order", {})
     operator = context.user_data.get("operator", {})
-    amount = int(context.user_data.get("amount_uzs") or 0)
-    date_iso = str(context.user_data.get("date_iso") or "")
-    sc_meta = context.user_data.get("sales_channel_meta")
+    pt = context.user_data.get("paytype")
+    amount = context.user_data.get("amount_uzs")
+    date_iso = context.user_data.get("date_iso")
     check_path = context.user_data.get("check_path")
 
-    if amount <= 0 or not date_iso or not sc_meta:
+    if pt not in ("cash", "card") or not isinstance(amount, int) or amount <= 0 or not date_iso:
         await query.edit_message_text("❌ Ma’lumot yetarli emas. Qaytadan /kiritish qiling.")
         return ConversationHandler.END
 
     try:
         org = get_default_organization()
 
-        # ✅ Контрагент nomi: "BRAND Mijoz"
         cp_name = f"{order.get('brand')} {order.get('client_name')}".strip()
         cp_phone_digits = str(order.get("phone_digits") or "").strip()
         cp = get_or_create_counterparty(cp_name, phone=cp_phone_digits)
@@ -297,7 +343,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Operator: {operator.get('name')} ({operator.get('phone')})"
         )
 
-        # ✅ PROJECT umuman yuborilmaydi (Проект bo‘sh)
+        # ✅ MoySklad: chernovik (moysklad.py ichida applicable=False)
         if pt == "card":
             created = create_paymentin(
                 organization_meta=org["meta"],
@@ -324,12 +370,12 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 attach_file_to_cashin(str(created["id"]), str(check_path))
 
         await query.edit_message_text(
-            f"✅ MoySklad’ga {doc_kind} yuborildi.\n"
+            f"✅ MoySklad’ga {doc_kind} yuborildi (черновик).\n"
             f"📄 Doc: {created.get('name','N/A')}\n"
             f"🆔 ID: {created.get('id','N/A')}"
         )
 
-        # ✅ YAKUN: foydalanuvchiga menu chiqaramiz (keyingi buyurtma uchun /kiritish)
+        # ✅ Yakunda menu
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text="✅ Tayyor. Keyingi buyurtma uchun /kiritish ni bosing.",
@@ -338,7 +384,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if GROUP_CHAT_ID:
             caption = (
-                f"✅ {doc_kind}\n\n"
+                f"✅ {doc_kind} (черновик)\n\n"
                 f"🏷 Brend: {order.get('brand')}\n"
                 f"👤 Mijoz: {order.get('client_name')}\n"
                 f"📞 Tel: {order.get('phone_plus')}\n"
@@ -357,11 +403,9 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
         return ConversationHandler.END
 
-    # (ixtiyoriy) cleanup
-    context.user_data.pop("check_path", None)
-    context.user_data.pop("ocr_text", None)
-    context.user_data.pop("amount_uzs", None)
-    context.user_data.pop("date_iso", None)
+    # cleanup (operator saqlansin)
+    for k in ("check_path", "ocr_text", "amount_uzs", "date_iso", "channels_map", "paytype", "sales_channel_meta"):
+        context.user_data.pop(k, None)
 
     return ConversationHandler.END
 
