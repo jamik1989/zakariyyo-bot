@@ -29,16 +29,22 @@ def _url(path: str) -> str:
     return f"{MOYSKLAD_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
 
 
+def _raise_http_error(e: requests.HTTPError) -> None:
+    resp = e.response
+    if resp is not None:
+        raise MoySkladError(
+            f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
+        ) from e
+    raise
+
+
 def ms_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     try:
         r = requests.get(_url(path), headers=_headers(), params=params, timeout=TIMEOUT)
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        resp = e.response
-        if resp is not None:
-            raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
-        raise
+        _raise_http_error(e)
 
 
 def ms_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -47,10 +53,7 @@ def ms_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        resp = e.response
-        if resp is not None:
-            raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
-        raise
+        _raise_http_error(e)
 
 
 def ms_put(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -59,10 +62,7 @@ def ms_put(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        resp = e.response
-        if resp is not None:
-            raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
-        raise
+        _raise_http_error(e)
 
 
 # ================= BASIC =================
@@ -99,6 +99,12 @@ def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
 
 
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
+    """
+    1) phone bo‘lsa: avval phone bilan topadi
+    2) topilmasa: name bilan topadi
+    3) topilmasa: yaratadi
+    Topilganda phone/name bo‘sh bo‘lsa yangilaydi (yengil update).
+    """
     name = (name or "").strip()
     phone_n = _norm_phone(phone or "")
 
@@ -169,7 +175,7 @@ def create_paymentin(
         "moment": f"{date_iso} 00:00:00",
         "description": description,
 
-        # ✅ DRAFT / НЕ ПРОВЕДЕН
+        # ✅ Черновик / Не проведен
         "applicable": False,
     }
     return ms_post("/entity/paymentin", payload)
@@ -202,7 +208,7 @@ def create_cashin(
         "moment": f"{date_iso} 00:00:00",
         "description": description,
 
-        # ✅ DRAFT / НЕ ПРОВЕДЕН
+        # ✅ Черновик / Не проведен
         "applicable": False,
     }
     return ms_post("/entity/cashin", payload)
@@ -211,6 +217,9 @@ def create_cashin(
 # ================= FILE ATTACH (best-effort) =================
 
 def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """
+    /entity/{entity}/{id}/files ga multipart bilan yuklash (best-effort).
+    """
     if not doc_id or not file_path or not os.path.exists(file_path):
         return None
 
@@ -230,7 +239,10 @@ def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[D
             r.raise_for_status()
             return r.json() if r.text else {"ok": True}
     except Exception as e:
-        logger.warning("File attach failed: entity=%s id=%s file=%s err=%s", entity, doc_id, file_path, e)
+        logger.warning(
+            "File attach failed: entity=%s id=%s file=%s err=%s",
+            entity, doc_id, file_path, e
+        )
         return None
 
 
@@ -252,6 +264,7 @@ def create_incoming_payment(
     date_iso: str,
     description: str,
 ) -> Dict[str, Any]:
+    # eski importlar buzilmasin
     return create_paymentin(
         organization_meta=organization_meta,
         agent_meta=agent_meta,
