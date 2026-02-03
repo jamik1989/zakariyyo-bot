@@ -82,7 +82,7 @@ def get_sales_channels(limit: int = 50) -> List[Dict[str, Any]]:
     return data.get("rows", [])
 
 
-# ================= COUNTERPARTY (PHONE-FIRST) =================
+# ================= COUNTERPARTY =================
 
 def _norm_phone(phone: str) -> str:
     return "".join(ch for ch in (phone or "") if ch.isdigit())
@@ -92,10 +92,42 @@ def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
     p = _norm_phone(phone)
     if not p:
         return None
-
     data = ms_get("/entity/counterparty", params={"filter": f"phone~{p}", "limit": 1})
     rows = data.get("rows", [])
     return rows[0] if rows else None
+
+
+def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    ✅ YANGI: kontragentlarni qidirish (brand/ism/tel bo‘yicha).
+    MoySklad `search` paramini ishlatadi.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    data = ms_get("/entity/counterparty", params={"search": q, "limit": int(limit)})
+    return data.get("rows", []) or []
+
+
+def get_counterparty_by_id(cp_id: str) -> Dict[str, Any]:
+    """
+    ✅ YANGI: tanlangan kontragentni ID bo‘yicha olish.
+    """
+    if not cp_id:
+        raise ValueError("cp_id bo‘sh")
+    return ms_get(f"/entity/counterparty/{cp_id}")
+
+
+def create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
+    """
+    ✅ YANGI: ro‘yxatda topilmasa, yangitdan yaratish.
+    """
+    name = (name or "").strip()
+    phone_n = _norm_phone(phone or "")
+    payload: Dict[str, Any] = {"name": name or phone_n or "NoName"}
+    if phone_n:
+        payload["phone"] = phone_n
+    return ms_post("/entity/counterparty", payload)
 
 
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
@@ -142,10 +174,7 @@ def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[s
             return cp
 
     # 3) yaratamiz
-    payload: Dict[str, Any] = {"name": name or phone_n or "NoName"}
-    if phone_n:
-        payload["phone"] = phone_n
-    return ms_post("/entity/counterparty", payload)
+    return create_counterparty(name=name, phone=phone_n)
 
 
 # ================= PAYMENT (KARTA) =================
@@ -174,9 +203,7 @@ def create_paymentin(
         "sum": int(sum_uzs) * 100,
         "moment": f"{date_iso} 00:00:00",
         "description": description,
-
-        # ✅ Черновик / Не проведен
-        "applicable": False,
+        "applicable": False,  # ✅ Черновик / Не проведен
     }
     return ms_post("/entity/paymentin", payload)
 
@@ -207,9 +234,7 @@ def create_cashin(
         "sum": int(sum_uzs) * 100,
         "moment": f"{date_iso} 00:00:00",
         "description": description,
-
-        # ✅ Черновик / Не проведен
-        "applicable": False,
+        "applicable": False,  # ✅ Черновик / Не проведен
     }
     return ms_post("/entity/cashin", payload)
 

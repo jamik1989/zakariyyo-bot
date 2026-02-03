@@ -1,3 +1,4 @@
+# app/main.py
 import logging
 import sys
 
@@ -31,18 +32,39 @@ from .handlers.auth import (
     cancel as cancel_auth,
 )
 
+# ✅ NEW ORDER FLOW IMPORTS (order.py ichida bo‘ladi)
 from .handlers.order import (
     kiritish_start,
-    step_text,
-    handle_check,
-    handle_manual_amount_date,     # ✅ bitta xabarda summa-sana
-    on_sales_channel_chosen,
-    on_paytype_chosen,
-    STEP_TEXT,
-    STEP_CHECK,
-    STEP_AMOUNT_DATE,              # ✅ yangi state
-    STEP_CHANNEL,
+
+    # 1) paytype
+    on_paytype_chosen,          # cb: pt:cash | pt:card
+
+    # 2) counterparty search/select/create
+    cp_search_text,             # msg text: qidiruv so‘zi (brand/ism/tel)
+    on_cp_pick,                 # cb: cp:<id>
+    on_cp_create_new,           # cb: cpnew:<query>
+
+    # 3a) summa-sana qo'lda (cash yoki OCR fallback/edit)
+    handle_manual_amount_date,  # msg text: 600000-28.01.2026
+
+    # 3b) karta bo‘lsa: chek rasmi + OCR
+    handle_check_optional,      # msg photo/pdf
+
+    # 4) sales channel
+    on_sales_channel_chosen,    # cb: sc:<id>
+
+    # 5) review/confirm/back/edit
+    on_review_action,           # cb: rv:confirm | rv:edit | rv:back
+
+    # states
     STEP_PAYTYPE,
+    STEP_CP_SEARCH,
+    STEP_CP_PICK,
+    STEP_AMOUNT_DATE,
+    STEP_CHECK,
+    STEP_CHANNEL,
+    STEP_REVIEW,
+
     cancel as cancel_order,
 )
 
@@ -69,7 +91,7 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_auth)],
         allow_reentry=True,
-        per_message=False,  # ✅ MessageHandler bor, shuning uchun False
+        per_message=False,
     )
     application.add_handler(register_conv)
 
@@ -82,23 +104,39 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel_auth)],
         allow_reentry=True,
-        per_message=False,  # ✅
+        per_message=False,
     )
     application.add_handler(login_conv)
 
-    # ORDER FLOW
+    # ORDER FLOW (NEW)
     order_conv = ConversationHandler(
         entry_points=[CommandHandler("kiritish", kiritish_start)],
         states={
-            STEP_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, step_text)],
-            STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check)],
-            STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
-            STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
+            # 1) paytype
             STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
+
+            # 2) counterparty search -> pick/create
+            STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
+            STEP_CP_PICK: [
+                CallbackQueryHandler(on_cp_pick, pattern=r"^cp:"),
+                CallbackQueryHandler(on_cp_create_new, pattern=r"^cpnew:"),
+            ],
+
+            # ✅ 3a) summa-sana (cash yoki OCR fallback/edit)
+            STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
+
+            # 3b) karta bo‘lsa: chek foto (OCR shu yerda)
+            STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
+
+            # 4) sales channel
+            STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
+
+            # 5) review/confirm
+            STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
         allow_reentry=True,
-        per_message=False,  # ✅ MessageHandler bor -> per_message True QO‘YILMAYDI
+        per_message=False,
     )
     application.add_handler(order_conv)
 
@@ -106,19 +144,20 @@ def build_app() -> Application:
 
 
 def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN topilmadi. Railway Variables yoki .env ga BOT_TOKEN kiriting.")
+
     logger.info("🚀 Bot ishga tushmoqda...")
     init_db()
 
     app = build_app()
 
     try:
-        # ✅ polling (Railway'da 1 replica bo‘lishi shart)
         app.run_polling(
             allowed_updates=["message", "callback_query"],
             drop_pending_updates=True,
         )
     except Conflict as e:
-        # 409 Conflict = boshqa joyda ham bot ishlayapti
         logger.error("❌ Telegram Conflict (409): boshqa instansiya ishlayapti. %s", e)
         sys.exit(1)
 
