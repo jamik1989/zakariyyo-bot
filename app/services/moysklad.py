@@ -32,9 +32,7 @@ def _url(path: str) -> str:
 def _raise_http_error(e: requests.HTTPError) -> None:
     resp = e.response
     if resp is not None:
-        raise MoySkladError(
-            f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
-        ) from e
+        raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
     raise
 
 
@@ -97,67 +95,23 @@ def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
-def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """
-    ✅ YANGI: kontragentlarni qidirish (brand/ism/tel bo‘yicha).
-    MoySklad `search` paramini ishlatadi.
-    """
-    q = (query or "").strip()
-    if not q:
-        return []
-    data = ms_get("/entity/counterparty", params={"search": q, "limit": int(limit)})
-    return data.get("rows", []) or []
-
-
-def get_counterparty_by_id(cp_id: str) -> Dict[str, Any]:
-    """
-    ✅ YANGI: tanlangan kontragentni ID bo‘yicha olish.
-    """
-    if not cp_id:
-        raise ValueError("cp_id bo‘sh")
-    return ms_get(f"/entity/counterparty/{cp_id}")
-
-
-def create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
-    """
-    ✅ YANGI: ro‘yxatda topilmasa, yangitdan yaratish.
-    """
-    name = (name or "").strip()
-    phone_n = _norm_phone(phone or "")
-    payload: Dict[str, Any] = {"name": name or phone_n or "NoName"}
-    if phone_n:
-        payload["phone"] = phone_n
-    return ms_post("/entity/counterparty", payload)
-
-
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
-    """
-    1) phone bo‘lsa: avval phone bilan topadi
-    2) topilmasa: name bilan topadi
-    3) topilmasa: yaratadi
-    Topilganda phone/name bo‘sh bo‘lsa yangilaydi (yengil update).
-    """
     name = (name or "").strip()
     phone_n = _norm_phone(phone or "")
 
-    # 1) phone bilan topamiz
     if phone_n:
         found = find_counterparty_by_phone(phone_n)
         if found:
             cp_id = found.get("id")
             updates: Dict[str, Any] = {}
-
             if name and (found.get("name") or "").strip() != name:
                 updates["name"] = name
-
             if not _norm_phone(found.get("phone") or ""):
                 updates["phone"] = phone_n
-
             if updates and cp_id:
                 return ms_put(f"/entity/counterparty/{cp_id}", updates)
             return found
 
-    # 2) name bilan topamiz
     if name:
         data = ms_get("/entity/counterparty", params={"search": name, "limit": 1})
         rows = data.get("rows", [])
@@ -165,19 +119,32 @@ def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[s
             cp = rows[0]
             cp_id = cp.get("id")
             updates: Dict[str, Any] = {}
-
             if phone_n and not _norm_phone(cp.get("phone") or ""):
                 updates["phone"] = phone_n
-
             if updates and cp_id:
                 return ms_put(f"/entity/counterparty/{cp_id}", updates)
             return cp
 
-    # 3) yaratamiz
-    return create_counterparty(name=name, phone=phone_n)
+    payload: Dict[str, Any] = {"name": name or phone_n or "NoName"}
+    if phone_n:
+        payload["phone"] = phone_n
+    return ms_post("/entity/counterparty", payload)
 
 
-# ================= PAYMENT (KARTA) =================
+def _moment(date_iso: str, time_hms: Optional[str]) -> str:
+    t = (time_hms or "").strip()
+    if t:
+        # 14:23 -> 14:23:00 qilib yuboramiz
+        if re.match(r"^\d{2}:\d{2}$", t):
+            t = t + ":00"
+        return f"{date_iso} {t}"
+    return f"{date_iso} 00:00:00"
+
+
+import re  # noqa: E402
+
+
+# ================= PAYMENT (CARD) =================
 
 def create_paymentin(
     organization_meta: Dict[str, Any],
@@ -186,29 +153,26 @@ def create_paymentin(
     sum_uzs: int,
     date_iso: str,
     description: str,
+    time_hms: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Входящий платёж (karta).
-    ✅ TALAB:
-      - 'project' yuborilmaydi (Проект bo‘sh)
-      - Hujjat 'Черновик' bo‘lsin -> applicable=false
-    """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
+    if not date_iso:
+        raise MoySkladError("Sana topilmadi.")
 
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
         "salesChannel": {"meta": sales_channel_meta},
         "sum": int(sum_uzs) * 100,
-        "moment": f"{date_iso} 00:00:00",
+        "moment": _moment(date_iso, time_hms),
         "description": description,
-        "applicable": False,  # ✅ Черновик / Не проведен
+        "applicable": False,  # ✅ черновик
     }
     return ms_post("/entity/paymentin", payload)
 
 
-# ================= CASH IN (NAQT) =================
+# ================= CASH IN =================
 
 def create_cashin(
     organization_meta: Dict[str, Any],
@@ -217,45 +181,38 @@ def create_cashin(
     sum_uzs: int,
     date_iso: str,
     description: str,
+    time_hms: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Приходный ордер (naqt).
-    ✅ TALAB:
-      - 'project' yuborilmaydi (Проект bo‘sh)
-      - Hujjat 'Черновик' bo‘lsin -> applicable=false
-    """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
+    if not date_iso:
+        raise MoySkladError("Sana topilmadi.")
 
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
         "salesChannel": {"meta": sales_channel_meta},
         "sum": int(sum_uzs) * 100,
-        "moment": f"{date_iso} 00:00:00",
+        "moment": _moment(date_iso, time_hms),
         "description": description,
-        "applicable": False,  # ✅ Черновик / Не проведен
+        "applicable": False,  # ✅ черновик
     }
     return ms_post("/entity/cashin", payload)
 
 
-# ================= FILE ATTACH (best-effort) =================
+# ================= FILE ATTACH =================
 
 def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[Dict[str, Any]]:
-    """
-    /entity/{entity}/{id}/files ga multipart bilan yuklash (best-effort).
-    """
     if not doc_id or not file_path or not os.path.exists(file_path):
         return None
 
     url = _url(f"/entity/{entity}/{doc_id}/files")
-
     filename = os.path.basename(file_path)
     mime, _ = mimetypes.guess_type(filename)
     mime = mime or "application/octet-stream"
 
     headers = _headers().copy()
-    headers.pop("Content-Type", None)  # multipartni requests o'zi qo'yadi
+    headers.pop("Content-Type", None)
 
     try:
         with open(file_path, "rb") as f:
@@ -264,10 +221,7 @@ def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[D
             r.raise_for_status()
             return r.json() if r.text else {"ok": True}
     except Exception as e:
-        logger.warning(
-            "File attach failed: entity=%s id=%s file=%s err=%s",
-            entity, doc_id, file_path, e
-        )
+        logger.warning("File attach failed: entity=%s id=%s file=%s err=%s", entity, doc_id, file_path, e)
         return None
 
 
@@ -279,8 +233,6 @@ def attach_file_to_cashin(cashin_id: str, file_path: str) -> Optional[Dict[str, 
     return _attach_file_generic("cashin", cashin_id, file_path)
 
 
-# ================= BACKWARD COMPAT ALIAS =================
-
 def create_incoming_payment(
     organization_meta: Dict[str, Any],
     agent_meta: Dict[str, Any],
@@ -288,8 +240,8 @@ def create_incoming_payment(
     sum_uzs: int,
     date_iso: str,
     description: str,
+    time_hms: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # eski importlar buzilmasin
     return create_paymentin(
         organization_meta=organization_meta,
         agent_meta=agent_meta,
@@ -297,4 +249,5 @@ def create_incoming_payment(
         sum_uzs=sum_uzs,
         date_iso=date_iso,
         description=description,
+        time_hms=time_hms,
     )
