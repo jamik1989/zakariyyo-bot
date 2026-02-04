@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 
 from google.cloud import vision
 from google.oauth2 import service_account
@@ -18,9 +18,7 @@ class VisionError(RuntimeError):
 
 def _build_client() -> vision.ImageAnnotatorClient:
     if not GCP_SA_JSON:
-        raise VisionError(
-            "GCP_SA_JSON topilmadi. Railway Variables ga GCP_SA_JSON qo‘ying (service account JSON matni)."
-        )
+        raise VisionError("GCP_SA_JSON topilmadi. Railway Variables ga GCP_SA_JSON qo‘ying (service account JSON matni).")
     try:
         info = json.loads(GCP_SA_JSON)
     except Exception as e:
@@ -40,19 +38,16 @@ def _client() -> vision.ImageAnnotatorClient:
     return _CLIENT
 
 
-# ---------------- TEXT EXTRACTION ----------------
-
 def extract_text(image_path: str) -> str:
     """
-    Chek/kvitansiya uchun document_text_detection aniqroq.
-    Agar bo‘sh qaytsa, text_detection fallback.
+    Chek/kvитанция uchun avval document_text_detection (aniqroq),
+    keyin text_detection fallback.
     """
     with open(image_path, "rb") as f:
         content = f.read()
 
     image = vision.Image(content=content)
 
-    # 1) document_text_detection
     resp = _client().document_text_detection(image=image)
     if resp.error and resp.error.message:
         doc_err = resp.error.message
@@ -60,12 +55,10 @@ def extract_text(image_path: str) -> str:
         doc_err = None
 
     if not doc_err:
-        txt = (resp.full_text_annotation.text if resp.full_text_annotation else "") or ""
-        if txt.strip():
-            return txt
+        if resp.full_text_annotation and resp.full_text_annotation.text:
+            return resp.full_text_annotation.text or ""
         doc_err = "document_text_detection returned empty"
 
-    # 2) fallback: text_detection
     resp2 = _client().text_detection(image=image)
     if resp2.error and resp2.error.message:
         raise VisionError(resp2.error.message)
@@ -76,212 +69,120 @@ def extract_text(image_path: str) -> str:
     return resp2.text_annotations[0].description or ""
 
 
-# ---------------- AMOUNT (UZS) ----------------
-
-_AMOUNT_HINTS = [
-    "JAMI", "JAMI:", "ITOG", "ИТОГ", "TOTAL", "SUM", "SUMMA", "СУММА",
-    "K OPLATE", "К ОПЛАТЕ", "OPLATA", "ОПЛАТА", "PAYMENT",
-    "UZS", "SO'M", "SOM", "СУМ", "СУММ",
-]
-
-
-def _looks_like_card_number(s: str) -> bool:
-    # 16-digit yoki 4-4-4-4 ko‘rinishlar
-    digits = re.sub(r"\D", "", s or "")
-    if len(digits) == 16:
-        return True
-    if re.search(r"\b(\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4})\b", s or ""):
-        return True
-    return False
-
-
-def _normalize_amount_candidate(raw: str) -> Optional[int]:
-    """
-    400.000 -> 400000
-    400 000 -> 400000
-    400,000 -> 400000
-    40.400.000 (OCR xato bo‘lishi mumkin) -> 40400000 (lekin keyin scoring bilan tushiramiz)
-    """
-    if not raw:
-        return None
-
-    # faqat raqam va ajratgichlar
-    cleaned = raw.strip()
-
-    # kartaga o‘xshasa summaga kiritmaymiz
-    if _looks_like_card_number(cleaned):
-        return None
-
-    # Juda uzun raqamlar (masalan 20+ raqam) kerak emas
-    digits_only = re.sub(r"\D", "", cleaned)
-    if len(digits_only) > 12:
-        return None
-
-    # Asosiy: hamma ajratgichlarni olib tashlab int qilish
-    if not digits_only:
-        return None
-
-    val = int(digits_only)
-    return val
-
-
-def _line_has_amount_hint(line: str) -> bool:
-    u = (line or "").upper()
-    return any(h in u for h in _AMOUNT_HINTS)
+def _digits_only(s: str) -> str:
+    return re.sub(r"\D", "", s or "")
 
 
 def _find_amount_uzs(text: str) -> Optional[int]:
     """
-    Strategiya:
-    1) Avval "JAMI / ИТОГ / TOTAL / SUMMA / UZS / SO'M" bor qatorlardan qidiramiz.
-    2) Topilmasa, barcha matndan qidiramiz.
-    3) Karta raqami / uzun raqamlarni tashlab ketamiz.
-    4) "mantiqiy" oraliq: 1 000 ... 500 000 000
+    Summani aniqlash:
+    - karta raqami (13-19 digit) ni tashlab ketamiz
+    - 'UZS', 'SO'M', 'SUM', 'СУМ' atrofidagi raqamlarni ustun qo'yamiz
+    - aks holda eng katta mantiqiy summani olamiz
     """
     if not text:
         return None
 
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    preferred_lines = [ln for ln in lines if _line_has_amount_hint(ln)]
-    scan_groups = [preferred_lines, lines]
+    t = text.upper()
 
-    candidates: List[Tuple[int, int]] = []  # (score, value)
+    preferred: list[int] = []
+    all_candidates: list[int] = []
 
-    for gi, group in enumerate(scan_groups):
-        for line in group:
-            # kartaga o‘xshagan qatorlarni o‘tkazib yuboramiz
-            if _looks_like_card_number(line):
-                continue
+    # raqam tokenlar
+    for m in re.finditer(r"(?<!\d)(\d[\d\s.,]{2,18})(?!\d)", t):
+        raw = m.group(1)
+        digits = _digits_only(raw)
+        if not digits:
+            continue
 
-            # line ichidan "raqam-ajratuvchi" fragmentlarni topamiz
-            for m in re.finditer(r"(?<!\d)(\d[\d\s.,]{2,15})(?!\d)", line):
-                raw = m.group(1)
-                val = _normalize_amount_candidate(raw)
-                if val is None:
-                    continue
+        # karta raqamini kesamiz
+        if 13 <= len(digits) <= 19:
+            continue
 
-                # mantiqiy filtr
-                if not (1000 <= val <= 500_000_000):
-                    continue
+        val = int(digits)
 
-                score = 0
-                # hint bor qatorlar kuchli
-                if _line_has_amount_hint(line):
-                    score += 50
-                # preferred_lines guruhiga birinchi o‘rinda qaraymiz
-                score += (20 if gi == 0 else 0)
-                # "UZS / SO'M" bo‘lsa yana bonus
-                if "UZS" in line.upper() or "SO" in line.upper() or "СУМ" in line.upper():
-                    score += 10
+        if not (1000 <= val <= 500_000_000):
+            continue
 
-                # Juda katta qiymatlarni biroz penalti (OCR xato bo‘lishi ehtimoli)
-                if val >= 50_000_000:
-                    score -= 5
-                if val >= 200_000_000:
-                    score -= 20
+        all_candidates.append(val)
 
-                candidates.append((score, val))
+        # atrofida valuta kalit so'zlari bo'lsa preferred
+        start = max(0, m.start() - 15)
+        end = min(len(t), m.end() + 15)
+        window = t[start:end]
+        if any(k in window for k in ("UZS", "SO'M", "SOM", "SUM", "СУМ", "СОМ", "ИТОГО", "JAMI", "TOTAL")):
+            preferred.append(val)
 
-        # agar hintli qatordan yaxshi kandidat topsak, shu bosqichdayoq qaytaramiz
-        if candidates and gi == 0:
-            best = sorted(candidates, key=lambda x: (x[0], x[1]))[-1]
-            return best[1]
-
-    if not candidates:
-        return None
-
-    best = sorted(candidates, key=lambda x: (x[0], x[1]))[-1]
-    return best[1]
-
-
-# ---------------- DATE + TIME ----------------
-
-_MONTH_MAP = {
-    "JAN": 1, "YAN": 1, "ЯНВ": 1,
-    "FEB": 2, "FEV": 2, "ФЕВ": 2,
-    "MAR": 3, "МАР": 3,
-    "APR": 4, "АПР": 4,
-    "MAY": 5, "МАЙ": 5,
-    "JUN": 6, "ИЮН": 6,
-    "JUL": 7, "ИЮЛ": 7,
-    "AUG": 8, "AVG": 8, "АВГ": 8,
-    "SEP": 9, "SEN": 9, "СЕН": 9,
-    "OCT": 10, "OKT": 10, "ОКТ": 10,
-    "NOV": 11, "NOY": 11, "НОЯ": 11, "НОВ": 11,
-    "DEC": 12, "DEK": 12, "ДЕК": 12,
-}
-
-
-def _find_time(text: str) -> Optional[str]:
-    """
-    14:23
-    14:23:05
-    """
-    if not text:
-        return None
-
-    # hh:mm(:ss)?
-    m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b", text)
-    if not m:
-        return None
-
-    hh = int(m.group(1))
-    mm = int(m.group(2))
-    ss = int(m.group(3)) if m.group(3) else 0
-    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+    if preferred:
+        return max(preferred)
+    if all_candidates:
+        return max(all_candidates)
+    return None
 
 
 def _find_date(text: str) -> Optional[str]:
     """
-    Kuchliroq qidiruv:
-    - dd.mm.yyyy / dd/mm/yyyy / dd-mm-yyyy
-    - dd.mm.yy
+    Kuchliroq sana qidirish:
+    - dd.mm.yyyy / dd/mm/yy / dd-mm-yyyy
     - yyyy-mm-dd
-    - dd Mon yyyy (Mon = yan/fev/... / jan/feb/...)
+    - bir nechta topilsa: eng real variantni tanlaymiz (2000-2099 oralig'i)
     """
     if not text:
         return None
 
-    # 1) dd.mm.yyyy yoki dd.mm.yy
-    m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", text)
-    if m:
+    t = text
+
+    candidates: list[date] = []
+
+    # dd.mm.yyyy or dd.mm.yy
+    for m in re.finditer(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", t):
         d = int(m.group(1))
         mo = int(m.group(2))
         y = int(m.group(3))
         if y < 100:
             y += 2000
+        if not (2000 <= y <= 2099):
+            continue
         try:
-            return date(y, mo, d).isoformat()
+            candidates.append(date(y, mo, d))
         except Exception:
             pass
 
-    # 2) yyyy-mm-dd
-    m = re.search(r"\b(\d{4})[./-](\d{1,2})[./-](\d{1,2})\b", text)
-    if m:
+    # yyyy-mm-dd
+    for m in re.finditer(r"\b(20\d{2})[./-](\d{1,2})[./-](\d{1,2})\b", t):
         y = int(m.group(1))
         mo = int(m.group(2))
         d = int(m.group(3))
         try:
-            return date(y, mo, d).isoformat()
+            candidates.append(date(y, mo, d))
         except Exception:
             pass
 
-    # 3) dd mon yyyy (mon 3 harf yoki kirill)
-    m = re.search(r"\b(\d{1,2})\s*([A-Za-zА-Яа-яЁё]{3})\s*(\d{2,4})\b", text)
-    if m:
-        d = int(m.group(1))
-        mon = m.group(2).upper()
-        y = int(m.group(3))
-        if y < 100:
-            y += 2000
-        mo = _MONTH_MAP.get(mon)
-        if mo:
-            try:
-                return date(y, mo, d).isoformat()
-            except Exception:
-                pass
+    if not candidates:
+        return None
 
-    return None
+    # ko'pincha chekda keraklisi oxirroqda bo'ladi
+    best = sorted(candidates)[-1]
+    return best.isoformat()
+
+
+def _find_time(text: str) -> Optional[str]:
+    """
+    Vaqt:
+    - HH:MM
+    - HH:MM:SS
+    """
+    if not text:
+        return None
+
+    # ko'pincha chekda vaqt ham bor
+    m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b", text)
+    if not m:
+        return None
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    ss = int(m.group(3)) if m.group(3) else 0
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
 def detect_amount_date_time(image_path: str) -> Tuple[Optional[int], Optional[str], Optional[str], str]:
