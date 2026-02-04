@@ -29,7 +29,7 @@ from ..services.moysklad import (
 )
 from ..services.vision import detect_amount_date_time
 
-# /kiritish -> paytype -> cp_search -> cp_pick/create -> (cash: fix fields) (card: check+ocr then fix missing) -> channel -> send
+# /kiritish -> paytype -> cp_search -> cp_pick/create -> (cash: fix fields) (card: check+ocr then fix missing) -> channel -> PREVIEW -> SEND
 STEP_PAYTYPE, STEP_CP_SEARCH, STEP_CP_PICK, STEP_AMOUNT_DATE, STEP_CHECK, STEP_CHANNEL, STEP_REVIEW = range(7)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
@@ -60,10 +60,34 @@ def _paytype_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 
-def _review_keyboard() -> InlineKeyboardMarkup:
+def _review_keyboard(stage: str) -> InlineKeyboardMarkup:
+    """
+    stage:
+      - "ocr"   -> OCR natijasi tekshiruv
+      - "final" -> MoySklad'ga yuborishdan oldingi preview
+    """
+    if stage == "final":
+        kb = [
+            [InlineKeyboardButton("✅ Tasdiqlash (MoySklad)", callback_data="rv:confirm")],
+            [InlineKeyboardButton("✏️ Tahrirlash", callback_data="rv:edit")],
+        ]
+        return InlineKeyboardMarkup(kb)
+
+    # ocr
     kb = [
         [InlineKeyboardButton("✅ Tasdiq", callback_data="rv:confirm")],
         [InlineKeyboardButton("✏️ Tuzatish", callback_data="rv:edit")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+def _edit_keyboard() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("💰 Summani o‘zgartirish", callback_data="rv:ea")],
+        [InlineKeyboardButton("📅 Sanani o‘zgartirish", callback_data="rv:ed")],
+        [InlineKeyboardButton("🕒 Vaqtni o‘zgartirish", callback_data="rv:et")],
+        [InlineKeyboardButton("📊 Kanalni o‘zgartirish", callback_data="rv:ec")],
+        [InlineKeyboardButton("⬅️ Orqaga (Preview)", callback_data="rv:back")],
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -72,6 +96,15 @@ def _review_keyboard() -> InlineKeyboardMarkup:
 
 def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
+
+
+def _format_amount(amount: Optional[int]) -> str:
+    """
+    5000000 -> '5 000 000'
+    """
+    if not isinstance(amount, int):
+        return "TOPILMADI"
+    return f"{amount:,}".replace(",", " ")
 
 
 def _norm_brand(brand: str) -> str:
@@ -262,7 +295,7 @@ async def _ask_sales_channel(chat_update_obj, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     channels = channels[:10]
-    context.user_data["channels_map"] = {c["id"]: c["meta"] for c in channels}
+    context.user_data["channels_map"] = {c["id"]: {"meta": c["meta"], "name": c.get("name")} for c in channels}
 
     keyboard = [[InlineKeyboardButton(c["name"], callback_data=f"sc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(keyboard)
@@ -299,20 +332,148 @@ def _prompt_for_missing(missing: Set[str]) -> str:
     if "time" in missing:
         parts.append("🕒 Vaqtni kiriting (masalan: 14:23)")
 
-    if not parts:
-        return "✅ Hammasi topildi."
-
     return (
-        "✏️ Chekdan hammasi topilmadi.\n"
-        "Faqat yetishmagan ma’lumotni kiriting.\n\n"
+        "✏️ Yetishmayapti.\n"
+        "Faqat keraklisini yuboring:\n\n"
         + "\n".join(parts)
         + "\n\n"
-        "Agar xohlasangiz hammasini bitta qatorda ham yuborishingiz mumkin:\n"
+        "Yoki hammasini bitta qatorda:\n"
         "400000-28.01.2026 14:23"
     )
 
 
-def _cleanup_after_done(context: ContextTypes.DEFAULT_TYPE):
+def _build_preview_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    cp = context.user_data.get("cp") or {}
+    pt = context.user_data.get("paytype")
+    amount = context.user_data.get("amount_uzs")
+    date_iso = context.user_data.get("date_iso")
+    time_hms = context.user_data.get("time_hms")
+    sc = context.user_data.get("sales_channel") or {}
+
+    pt_txt = "Naqt" if pt == "cash" else ("Karta" if pt == "card" else "N/A")
+    amt_txt = _format_amount(amount)
+    dt_txt = date_iso or "TOPILMADI"
+    tm_txt = time_hms or "TOPILMADI"
+    sc_txt = sc.get("name") or "TOPILMADI"
+
+    check_path = context.user_data.get("check_path")
+    img_txt = "BOR ✅" if (check_path and os.path.exists(check_path)) else "YO‘Q ❌"
+
+    return (
+        "🔎 MoySklad’ga yuborishdan oldin tekshiruv:\n\n"
+        f"👤 Kontragent: {_cp_title(cp) if cp else 'TOPILMADI'}\n"
+        f"💳 To‘lov turi: {pt_txt}\n"
+        f"💵 Summa: {amt_txt} UZS\n"
+        f"📅 Sana: {dt_txt}\n"
+        f"🕒 Vaqt: {tm_txt}\n"
+        f"📊 Kanal: {sc_txt}\n"
+        f"🧾 Chek rasmi: {img_txt}\n\n"
+        "Tasdiqlaysizmi?"
+    )
+
+
+async def _show_final_preview(update_obj, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["review_stage"] = "final"
+    text = _build_preview_text(context)
+
+    if hasattr(update_obj, "edit_message_text"):
+        await update_obj.edit_message_text(text, reply_markup=_review_keyboard("final"))
+    else:
+        await update_obj.reply_text(text, reply_markup=_review_keyboard("final"))
+
+    return STEP_REVIEW
+
+
+async def _send_to_moysklad(query, context: ContextTypes.DEFAULT_TYPE):
+    operator = context.user_data.get("operator", {})
+    pt = context.user_data.get("paytype")
+    amount = context.user_data.get("amount_uzs")
+    date_iso = context.user_data.get("date_iso")
+    time_hms = context.user_data.get("time_hms")
+    check_path = context.user_data.get("check_path")
+    cp = context.user_data.get("cp") or {}
+    sc = context.user_data.get("sales_channel") or {}
+
+    if pt not in ("cash", "card") or not isinstance(amount, int) or amount <= 0 or not date_iso or not time_hms:
+        await query.edit_message_text("❌ Ma’lumot yetarli emas. /kiritish dan qaytadan boshlang.")
+        return ConversationHandler.END
+
+    if not cp.get("meta") or not sc.get("meta"):
+        await query.edit_message_text("❌ Kontragent yoki kanal yo‘q. /kiritish dan qaytadan.")
+        return ConversationHandler.END
+
+    try:
+        org = get_default_organization()
+
+        # description: formatlangan summa ham ko‘rsatiladi
+        desc = (
+            f"Counterparty: {cp.get('name')} | Phone: {cp.get('phone') or ''} | "
+            f"Sum: {_format_amount(amount)} | "
+            f"Operator: {operator.get('name')} ({operator.get('phone')})"
+        )
+
+        if pt == "card":
+            created = create_paymentin(
+                organization_meta=org["meta"],
+                agent_meta=cp["meta"],
+                sales_channel_meta=sc["meta"],
+                sum_uzs=amount,
+                date_iso=date_iso,
+                description=desc,
+                time_hms=time_hms,
+            )
+            doc_kind = "Входящий платёж"
+            if created.get("id") and check_path and os.path.exists(check_path):
+                attach_file_to_paymentin(str(created["id"]), str(check_path))
+        else:
+            created = create_cashin(
+                organization_meta=org["meta"],
+                agent_meta=cp["meta"],
+                sales_channel_meta=sc["meta"],
+                sum_uzs=amount,
+                date_iso=date_iso,
+                description=desc,
+                time_hms=time_hms,
+            )
+            doc_kind = "Приходный ордер"
+            if created.get("id") and check_path and os.path.exists(check_path):
+                attach_file_to_cashin(str(created["id"]), str(check_path))
+
+        await query.edit_message_text(
+            f"✅ MoySklad’ga {doc_kind} yuborildi (черновик).\n"
+            f"📄 Doc: {created.get('name','N/A')}\n"
+            f"🆔 ID: {created.get('id','N/A')}"
+        )
+
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✅ Tayyor. Keyingi buyurtma uchun /kiritish ni bosing.",
+            reply_markup=_menu_keyboard(),
+        )
+
+        if GROUP_CHAT_ID:
+            caption = (
+                f"✅ {doc_kind} (черновик)\n\n"
+                f"👤 Kontragent: {_cp_title(cp)}\n"
+                f"💳 To‘lov turi: {'Naqt' if pt=='cash' else 'Karta'}\n"
+                f"💵 Summa: {_format_amount(amount)} UZS\n"
+                f"📅 Sana: {date_iso}\n"
+                f"🕒 Vaqt: {time_hms}\n"
+                f"📊 Kanal: {sc.get('name') or ''}\n"
+                f"👨‍💼 Operator: {operator.get('name')} ({operator.get('phone')})\n"
+                f"🧾 MoySklad: {created.get('name','N/A')}"
+            )
+            if check_path and os.path.exists(check_path):
+                with open(check_path, "rb") as f:
+                    await context.bot.send_photo(chat_id=GROUP_CHAT_ID, photo=f, caption=caption)
+            else:
+                await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=caption)
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
+        return ConversationHandler.END
+
+    # cleanup
     for k in (
         "paytype",
         "cp_query",
@@ -324,8 +485,13 @@ def _cleanup_after_done(context: ContextTypes.DEFAULT_TYPE):
         "check_path",
         "ocr_text",
         "channels_map",
+        "sales_channel",
+        "review_stage",
+        "edit_target",
     ):
         context.user_data.pop(k, None)
+
+    return ConversationHandler.END
 
 
 # ---------------- flow ----------------
@@ -352,7 +518,7 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "2) Kontragent qidirish:\n"
         "Brand / ism / telefon yozing.\n\n"
-        "Yoki tez yaratish uchun shunday yozing:\n"
+        "Yoki tez yaratish:\n"
         "brendnomi-MijozNomi-910175253\n\n"
         "Misol:\n"
         "- NIKE\n"
@@ -393,8 +559,9 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return STEP_CHECK
 
         await update.message.reply_text(
-            "3) Naqt uchun summa, sana, (ixtiyoriy) vaqt kiriting.\n"
-            "Masalan: 600000-28.01.2026 14:23"
+            "3) Naqt uchun summa, sana, vaqt kiriting.\n"
+            "Masalan: 5000000-28.01.2026 14:23\n"
+            "yoki faqat summa: 5000000"
         )
         context.user_data.pop("amount_uzs", None)
         context.user_data.pop("date_iso", None)
@@ -447,11 +614,11 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STEP_CHECK
 
     await query.edit_message_text(
-        "3) Naqt uchun summa, sana, (ixtiyoriy) vaqt kiriting.\n"
+        "3) Naqt uchun summa, sana, vaqt kiriting.\n"
         "Masalan:\n"
-        "600000-28.01.2026 14:23\n"
-        "yoki faqat:\n"
-        "600000-28.01.2026"
+        "5000000-28.01.2026 14:23\n"
+        "yoki faqat summa:\n"
+        "5000000"
     )
     context.user_data.pop("amount_uzs", None)
     context.user_data.pop("date_iso", None)
@@ -466,7 +633,6 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = (query.data or "").split("cpnew:", 1)[-1].strip()
     name = raw or "New Counterparty"
 
-    # Agar telefon ko‘rinishida bo‘lsa — +998 qilib yuboramiz
     phone_plus = ""
     digits = _digits_only(raw)
     if len(digits) >= 7:
@@ -491,8 +657,9 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STEP_CHECK
 
     await query.edit_message_text(
-        "3) Naqt uchun summa, sana, (ixtiyoriy) vaqt kiriting.\n"
-        "Masalan: 600000-28.01.2026 14:23"
+        "3) Naqt uchun summa, sana, vaqt kiriting.\n"
+        "Masalan: 5000000-28.01.2026 14:23\n"
+        "yoki faqat summa: 5000000"
     )
     context.user_data.pop("amount_uzs", None)
     context.user_data.pop("date_iso", None)
@@ -503,6 +670,7 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Endi “faqat topilmaganini” to‘ldiradi.
+    Agar sales_channel tanlangan bo'lsa -> final previewga qaytadi.
     """
     text = update.message.text or ""
     amount, date_iso, time_hms = _parse_amount_date_time_flexible(text)
@@ -519,9 +687,15 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
 
+    # Agar kanal allaqachon tanlangan bo'lsa (tahrirlashdan qaytish) -> preview
+    if context.user_data.get("sales_channel"):
+        return await _show_final_preview(update.message, context)
+
     pt = context.user_data.get("paytype")
     if pt == "card":
-        await update.message.reply_text("✅ Ma’lumotlar tayyor.\nTo‘g‘rimi?", reply_markup=_review_keyboard())
+        # karta yo'lida: OCR review bo'lishi mumkin; lekin bu yerga faqat edit/missing keladi
+        context.user_data["review_stage"] = "ocr"
+        await update.message.reply_text("✅ Ma’lumotlar tayyor.\nTo‘g‘rimi?", reply_markup=_review_keyboard("ocr"))
         return STEP_REVIEW
 
     return await _ask_sales_channel(update.message, context)
@@ -566,7 +740,7 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return STEP_AMOUNT_DATE
 
-    # ✅ TALAB: agar chekda sana/vaqt topilmasa -> avtomatik hozirgi real sana+vaqt qo'yamiz
+    # ✅ TALAB: agar chekda sana/vaqt topilmasa -> avtomatik hozirgi real sana+vaqt
     now = datetime.now(TZ)
     if not context.user_data.get("date_iso"):
         context.user_data["date_iso"] = now.date().isoformat()
@@ -575,23 +749,19 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
 
     # amount topilmagan bo‘lsa — faqat amountni so‘raymiz
     missing = _missing_fields(context)
-    # date/time endi auto bo'ldi, shuning uchun ular missing bo'lmaydi
-
     if missing:
         await msg.reply_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
 
-    a_show = f"{context.user_data['amount_uzs']:,} UZS"
-    d_show = context.user_data["date_iso"]
-    t_show = context.user_data["time_hms"]
-
+    # OCR review
+    context.user_data["review_stage"] = "ocr"
     await msg.reply_text(
         "✅ Chek o‘qildi.\n\n"
-        f"💵 Summa: {a_show}\n"
-        f"📅 Sana: {d_show}\n"
-        f"🕒 Vaqt: {t_show}\n\n"
+        f"💵 Summa: {_format_amount(context.user_data.get('amount_uzs'))} UZS\n"
+        f"📅 Sana: {context.user_data.get('date_iso')}\n"
+        f"🕒 Vaqt: {context.user_data.get('time_hms')}\n\n"
         "To‘g‘rimi?",
-        reply_markup=_review_keyboard(),
+        reply_markup=_review_keyboard("ocr"),
     )
     return STEP_REVIEW
 
@@ -601,7 +771,44 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     action = (query.data or "").split("rv:", 1)[-1]
+    stage = context.user_data.get("review_stage") or "ocr"
 
+    # -------- FINAL PREVIEW ACTIONS --------
+    if stage == "final":
+        if action == "edit":
+            await query.edit_message_text(
+                "✏️ Qaysi ma’lumotni o‘zgartirasiz?",
+                reply_markup=_edit_keyboard(),
+            )
+            return STEP_REVIEW
+
+        if action == "back":
+            return await _show_final_preview(query, context)
+
+        if action in ("ea", "ed", "et"):
+            # amount/date/time edit -> STEP_AMOUNT_DATE ga yuboramiz (foydalanuvchi faqat bittasini yuboradi)
+            target_map = {"ea": "amount", "ed": "date", "et": "time"}
+            context.user_data["edit_target"] = target_map[action]
+
+            if action == "ea":
+                await query.edit_message_text("💰 Yangi summani yuboring. Masalan: 5000000")
+            elif action == "ed":
+                await query.edit_message_text("📅 Yangi sanani yuboring. Masalan: 28.01.2026")
+            else:
+                await query.edit_message_text("🕒 Yangi vaqtni yuboring. Masalan: 14:23")
+
+            return STEP_AMOUNT_DATE
+
+        if action == "ec":
+            # channel edit -> qaytadan kanal tanlaydi
+            return await _ask_sales_channel(query, context)
+
+        if action == "confirm":
+            return await _send_to_moysklad(query, context)
+
+        return STEP_REVIEW
+
+    # -------- OCR REVIEW ACTIONS --------
     if action == "edit":
         missing = _missing_fields(context)
         await query.edit_message_text(_prompt_for_missing(missing))
@@ -615,100 +822,28 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
 
+    # OCR confirmdan keyin kanal tanlaymiz
     return await _ask_sales_channel(query, context)
 
 
 async def on_sales_channel_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Endi bu yerda MoySkladga yubormaymiz.
+    Avval sales_channel'ni saqlaymiz va FINAL PREVIEW ko'rsatamiz.
+    """
     query = update.callback_query
     await query.answer()
 
     sc_id = (query.data or "").split("sc:", 1)[-1]
-    sc_meta = (context.user_data.get("channels_map") or {}).get(sc_id)
-    if not sc_meta:
+    sc_obj = (context.user_data.get("channels_map") or {}).get(sc_id)
+    if not sc_obj or not sc_obj.get("meta"):
         await query.edit_message_text("❌ Kanal topilmadi. Qaytadan /kiritish qiling.")
         return ConversationHandler.END
 
-    operator = context.user_data.get("operator", {})
-    pt = context.user_data.get("paytype")
-    amount = context.user_data.get("amount_uzs")
-    date_iso = context.user_data.get("date_iso")
-    time_hms = context.user_data.get("time_hms")
-    check_path = context.user_data.get("check_path")
-    cp = context.user_data.get("cp") or {}
+    context.user_data["sales_channel"] = {"meta": sc_obj["meta"], "name": sc_obj.get("name")}
 
-    if pt not in ("cash", "card") or not isinstance(amount, int) or amount <= 0 or not date_iso or not cp.get("meta"):
-        await query.edit_message_text("❌ Ma’lumot yetarli emas. Qaytadan /kiritish qiling.")
-        return ConversationHandler.END
-
-    try:
-        org = get_default_organization()
-        desc = (
-            f"Counterparty: {cp.get('name')} | Phone: {cp.get('phone') or ''} | "
-            f"Operator: {operator.get('name')} ({operator.get('phone')})"
-        )
-
-        if pt == "card":
-            created = create_paymentin(
-                organization_meta=org["meta"],
-                agent_meta=cp["meta"],
-                sales_channel_meta=sc_meta,
-                sum_uzs=amount,
-                date_iso=date_iso,
-                description=desc,
-                time_hms=time_hms,
-            )
-            doc_kind = "Входящий платёж"
-            if created.get("id") and check_path and os.path.exists(check_path):
-                attach_file_to_paymentin(str(created["id"]), str(check_path))
-        else:
-            created = create_cashin(
-                organization_meta=org["meta"],
-                agent_meta=cp["meta"],
-                sales_channel_meta=sc_meta,
-                sum_uzs=amount,
-                date_iso=date_iso,
-                description=desc,
-                time_hms=time_hms,
-            )
-            doc_kind = "Приходный ордер"
-            if created.get("id") and check_path and os.path.exists(check_path):
-                attach_file_to_cashin(str(created["id"]), str(check_path))
-
-        await query.edit_message_text(
-            f"✅ MoySklad’ga {doc_kind} yuborildi (черновик).\n"
-            f"📄 Doc: {created.get('name','N/A')}\n"
-            f"🆔 ID: {created.get('id','N/A')}"
-        )
-
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="✅ Tayyor. Keyingi buyurtma uchun /kiritish ni bosing.",
-            reply_markup=_menu_keyboard(),
-        )
-
-        if GROUP_CHAT_ID:
-            caption = (
-                f"✅ {doc_kind} (черновik)\n\n"
-                f"👤 Kontragent: {_cp_title(cp)}\n"
-                f"💳 To‘lov turi: {'Naqt' if pt=='cash' else 'Karta'}\n"
-                f"💵 Summa: {amount:,} UZS\n"
-                f"📅 Sana: {date_iso}\n"
-                f"🕒 Vaqt: {time_hms or '00:00:00'}\n"
-                f"👨‍💼 Operator: {operator.get('name')} ({operator.get('phone')})\n"
-                f"🧾 MoySklad: {created.get('name','N/A')}"
-            )
-            if check_path and os.path.exists(check_path):
-                with open(check_path, "rb") as f:
-                    await context.bot.send_photo(chat_id=GROUP_CHAT_ID, photo=f, caption=caption)
-            else:
-                await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=caption)
-
-    except Exception as e:
-        await query.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
-        return ConversationHandler.END
-
-    _cleanup_after_done(context)
-    return ConversationHandler.END
+    # final preview
+    return await _show_final_preview(query, context)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
