@@ -32,29 +32,23 @@ from .handlers.auth import (
     cancel as cancel_auth,
 )
 
-# ✅ NEW ORDER FLOW IMPORTS (order.py ichida bo‘ladi)
+# ✅ ORDER FLOW IMPORTS (order.py ichida bor)
 from .handlers.order import (
     kiritish_start,
 
-    # 1) paytype
     on_paytype_chosen,          # cb: pt:cash | pt:card
 
-    # 2) counterparty search/select/create
-    cp_search_text,             # msg text: qidiruv so‘zi (brand/ism/tel)
+    cp_search_text,             # msg text: qidiruv (yoki brend-mijoz-tel)
     on_cp_pick,                 # cb: cp:<id>
     on_cp_create_new,           # cb: cpnew:<query>
 
-    # 3a) summa-sana qo'lda (cash yoki OCR fallback/edit)
-    handle_manual_amount_date,  # msg text: 600000-28.01.2026
+    handle_manual_amount_date,  # msg text: amount/date/time yoki edit input
 
-    # 3b) karta bo‘lsa: chek rasmi + OCR
     handle_check_optional,      # msg photo/pdf
 
-    # 4) sales channel
     on_sales_channel_chosen,    # cb: sc:<id>
 
-    # 5) review/confirm/back/edit
-    on_review_action,           # cb: rv:confirm | rv:edit | rv:back
+    on_review_action,           # cb: rv:...
 
     # states
     STEP_PAYTYPE,
@@ -108,30 +102,25 @@ def build_app() -> Application:
     )
     application.add_handler(login_conv)
 
-    # ORDER FLOW (NEW)
+    # ORDER FLOW
     order_conv = ConversationHandler(
         entry_points=[CommandHandler("kiritish", kiritish_start)],
         states={
-            # 1) paytype
             STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
 
-            # 2) counterparty search -> pick/create
             STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
             STEP_CP_PICK: [
                 CallbackQueryHandler(on_cp_pick, pattern=r"^cp:"),
                 CallbackQueryHandler(on_cp_create_new, pattern=r"^cpnew:"),
             ],
 
-            # ✅ 3a) summa-sana (cash yoki OCR fallback/edit)
+            # ✅ amount/date/time manual yoki edit input shu state’da
             STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
 
-            # 3b) karta bo‘lsa: chek foto (OCR shu yerda)
             STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
 
-            # 4) sales channel
             STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
 
-            # 5) review/confirm
             STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],

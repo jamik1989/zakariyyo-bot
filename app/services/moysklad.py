@@ -3,7 +3,6 @@ from typing import Any, Dict, Optional, List
 import os
 import mimetypes
 import logging
-import re
 import requests
 
 from ..config import MOYSKLAD_BASE_URL, MOYSKLAD_TOKEN
@@ -33,7 +32,9 @@ def _url(path: str) -> str:
 def _raise_http_error(e: requests.HTTPError) -> None:
     resp = e.response
     if resp is not None:
-        raise MoySkladError(f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}") from e
+        raise MoySkladError(
+            f"HTTP {resp.status_code} {resp.reason}. URL: {resp.url}. BODY: {resp.text}"
+        ) from e
     raise
 
 
@@ -83,58 +84,31 @@ def get_sales_channels(limit: int = 50) -> List[Dict[str, Any]]:
 
 # ================= COUNTERPARTY =================
 
-def _digits_only(s: str) -> str:
-    return re.sub(r"\D", "", s or "")
-
-
-def _normalize_phone_plus(phone: str) -> str:
-    """
-    MoySklad’ga saqlash uchun: +998XXXXXXXXX ko‘rinishi.
-    """
-    p = (phone or "").strip()
-    if not p:
-        return ""
-
-    digits = _digits_only(p)
-    if not digits:
-        return ""
-
-    if len(digits) == 9:
-        return "+998" + digits
-    if len(digits) == 12 and digits.startswith("998"):
-        return "+" + digits
-    if len(digits) > 12:
-        return "+998" + digits[-9:]
-    if 9 < len(digits) < 12:
-        return "+998" + digits[-9:]
-    return "+" + digits
+def _norm_phone_digits(phone: str) -> str:
+    return "".join(ch for ch in (phone or "") if ch.isdigit())
 
 
 def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
-    """
-    Qidirishda filter phone~digits ishlatamiz (MoySklad substring).
-    """
-    digits = _digits_only(phone)
-    if not digits:
+    p = _norm_phone_digits(phone)
+    if not p:
         return None
-    data = ms_get("/entity/counterparty", params={"filter": f"phone~{digits}", "limit": 1})
+    data = ms_get("/entity/counterparty", params={"filter": f"phone~{p}", "limit": 1})
     rows = data.get("rows", [])
     return rows[0] if rows else None
 
 
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
     """
-    1) phone bo‘lsa: avval phone bilan topadi
-    2) topilmasa: name bilan topadi
-    3) topilmasa: yaratadi
-    Topilganda phone/name bo‘sh bo‘lsa yangilaydi (yengil update).
+    phone: +998... ko‘rinishida kelsa ham saqlaymiz.
+    Qidiruv esa digits bilan (phone~digits).
     """
     name = (name or "").strip()
-    phone_plus = _normalize_phone_plus(phone or "")
+    phone_raw = (phone or "").strip()
+    phone_digits = _norm_phone_digits(phone_raw)
 
-    # 1) phone bilan topamiz
-    if phone_plus:
-        found = find_counterparty_by_phone(phone_plus)
+    # 1) phone bilan topish
+    if phone_digits:
+        found = find_counterparty_by_phone(phone_digits)
         if found:
             cp_id = found.get("id")
             updates: Dict[str, Any] = {}
@@ -142,16 +116,14 @@ def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[s
             if name and (found.get("name") or "").strip() != name:
                 updates["name"] = name
 
-            # agar phone bo‘sh yoki plus ko‘rinish emas bo‘lsa update qilamiz
-            found_phone = _normalize_phone_plus(found.get("phone") or "")
-            if not found_phone:
-                updates["phone"] = phone_plus
+            if phone_raw and (found.get("phone") or "").strip() != phone_raw:
+                updates["phone"] = phone_raw
 
             if updates and cp_id:
                 return ms_put(f"/entity/counterparty/{cp_id}", updates)
             return found
 
-    # 2) name bilan topamiz
+    # 2) name bilan topish
     if name:
         data = ms_get("/entity/counterparty", params={"search": name, "limit": 1})
         rows = data.get("rows", [])
@@ -159,20 +131,16 @@ def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[s
             cp = rows[0]
             cp_id = cp.get("id")
             updates: Dict[str, Any] = {}
-
-            if phone_plus:
-                found_phone = _normalize_phone_plus(cp.get("phone") or "")
-                if not found_phone:
-                    updates["phone"] = phone_plus
-
+            if phone_raw and (cp.get("phone") or "").strip() != phone_raw:
+                updates["phone"] = phone_raw
             if updates and cp_id:
                 return ms_put(f"/entity/counterparty/{cp_id}", updates)
             return cp
 
-    # 3) yaratamiz
-    payload: Dict[str, Any] = {"name": name or phone_plus or "NoName"}
-    if phone_plus:
-        payload["phone"] = phone_plus
+    # 3) create
+    payload: Dict[str, Any] = {"name": name or phone_raw or "NoName"}
+    if phone_raw:
+        payload["phone"] = phone_raw
     return ms_post("/entity/counterparty", payload)
 
 
@@ -184,25 +152,20 @@ def create_paymentin(
     sales_channel_meta: Dict[str, Any],
     sum_uzs: int,
     date_iso: str,
-    time_hms: Optional[str],
     description: str,
+    time_hms: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Входящий платёж (karta).
-    - project yuborilmaydi
-    - Черновик: applicable=false
-    """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
 
-    moment_time = (time_hms or "00:00:00").strip() or "00:00:00"
+    moment = f"{date_iso} {time_hms or '00:00:00'}"
 
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
         "salesChannel": {"meta": sales_channel_meta},
         "sum": int(sum_uzs) * 100,
-        "moment": f"{date_iso} {moment_time}",
+        "moment": moment,
         "description": description,
         "applicable": False,
     }
@@ -217,32 +180,27 @@ def create_cashin(
     sales_channel_meta: Dict[str, Any],
     sum_uzs: int,
     date_iso: str,
-    time_hms: Optional[str],
     description: str,
+    time_hms: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Приходный ордер (naqt).
-    - project yuborilmaydi
-    - Черновик: applicable=false
-    """
     if sum_uzs <= 0:
         raise MoySkladError("Summa 0 dan katta bo‘lishi kerak.")
 
-    moment_time = (time_hms or "00:00:00").strip() or "00:00:00"
+    moment = f"{date_iso} {time_hms or '00:00:00'}"
 
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
         "salesChannel": {"meta": sales_channel_meta},
         "sum": int(sum_uzs) * 100,
-        "moment": f"{date_iso} {moment_time}",
+        "moment": moment,
         "description": description,
         "applicable": False,
     }
     return ms_post("/entity/cashin", payload)
 
 
-# ================= FILE ATTACH (best-effort) =================
+# ================= FILE ATTACH =================
 
 def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[Dict[str, Any]]:
     if not doc_id or not file_path or not os.path.exists(file_path):
