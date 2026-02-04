@@ -3,6 +3,8 @@ import re
 import os
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any, Set
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import (
     Update,
@@ -32,6 +34,8 @@ STEP_PAYTYPE, STEP_CP_SEARCH, STEP_CP_PICK, STEP_AMOUNT_DATE, STEP_CHECK, STEP_C
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+TZ = ZoneInfo("Asia/Tashkent")
 
 
 # ---------------- UI ----------------
@@ -70,6 +74,38 @@ def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
 
 
+def _norm_brand(brand: str) -> str:
+    return " ".join((brand or "").strip().upper().split())
+
+
+def _normalize_phone_uz(phone_raw: str) -> str:
+    """
+    Qabul qiladi:
+      - 910175253
+      - +998910175253
+      - 998910175253
+      - 91 017 52 53
+    Natija: +998XXXXXXXXX
+    """
+    digits = _digits_only(phone_raw)
+    if not digits:
+        return ""
+
+    if len(digits) == 9:
+        return "+998" + digits
+
+    if len(digits) == 12 and digits.startswith("998"):
+        return "+" + digits
+
+    if len(digits) > 12:
+        return "+998" + digits[-9:]
+
+    if 9 < len(digits) < 12:
+        return "+998" + digits[-9:]
+
+    return "+" + digits
+
+
 def _normalize_month_words(s: str) -> str:
     x = s or ""
     repl = {
@@ -86,7 +122,7 @@ def _parse_date_only(text: str) -> Optional[str]:
     s = (text or "").strip()
     if not s:
         return None
-    # tezkor regex
+
     m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", s)
     if m:
         d = int(m.group(1))
@@ -99,7 +135,6 @@ def _parse_date_only(text: str) -> Optional[str]:
         except Exception:
             pass
 
-    # dateutil fallback
     try:
         dt = du_parser.parse(_normalize_month_words(s), dayfirst=True, fuzzy=True)
         return dt.date().isoformat()
@@ -123,9 +158,11 @@ def _parse_amount_only(text: str) -> Optional[int]:
     digits = _digits_only(s)
     if not digits:
         return None
-    # juda uzun bo‘lsa (karta raqami bo‘lishi mumkin)
+
+    # karta raqami bo‘lishi mumkin (13+)
     if len(digits) >= 13:
         return None
+
     val = int(digits)
     if 1000 <= val <= 500_000_000:
         return val
@@ -145,32 +182,47 @@ def _parse_amount_date_time_flexible(text: str) -> Tuple[Optional[int], Optional
     if not s:
         return None, None, None
 
-    # time ni ajratib olamiz
     time_hms = _parse_time_only(s)
     if time_hms:
-        # matndan vaqt qismini olib tashlaymiz
         s_wo_time = re.sub(r"\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b", "", s).strip()
     else:
         s_wo_time = s
 
-    # amount-date bitta qatorda bo‘lishi mumkin
     m = re.match(r"^\s*([0-9][0-9\s.,]{2,20})\s*[-/,]\s*(.+?)\s*$", s_wo_time)
     if m:
         amount = _parse_amount_only(m.group(1))
         date_iso = _parse_date_only(m.group(2))
         return amount, date_iso, time_hms
 
-    # bo‘lmasa: faqat amount yoki faqat date
     amount = _parse_amount_only(s_wo_time)
     date_iso = _parse_date_only(s_wo_time)
 
-    # agar ikkalasi ham chiqsa (masalan "28.01.2026" da amount ham chiqib ketmasin)
-    if date_iso and amount and len(_digits_only(s_wo_time)) >= 6:
-        # sana ko‘rinishida bo‘lsa, amountni bekor qilamiz
-        if re.search(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", s_wo_time):
-            amount = None
+    if date_iso and amount and re.search(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", s_wo_time):
+        amount = None
 
     return amount, date_iso, time_hms
+
+
+def _parse_brand_name_phone(text: str) -> Optional[Tuple[str, str, str]]:
+    """
+    "brend-mijoz-910..." formatini ushlaydi.
+    Qaytaradi: (BRAND_UPPER, client_name, phone_plus)
+    """
+    s = (text or "").strip()
+    parts = [p.strip() for p in s.split("-", maxsplit=2)]
+    if len(parts) != 3:
+        return None
+
+    brand_raw, client_name, phone_raw = parts
+    brand = _norm_brand(brand_raw)
+    if not brand or not client_name:
+        return None
+
+    phone_plus = _normalize_phone_uz(phone_raw)
+    if not phone_plus:
+        return None
+
+    return brand, client_name, phone_plus
 
 
 def _cp_title(cp: Dict[str, Any]) -> str:
@@ -233,7 +285,6 @@ def _missing_fields(context: ContextTypes.DEFAULT_TYPE) -> Set[str]:
         missing.add("amount")
     if not date_iso:
         missing.add("date")
-    # vaqt ixtiyoriy emas deb qo‘ymoqchi bo‘lsangiz: shuni qoldiring
     if not time_hms:
         missing.add("time")
     return missing
@@ -301,7 +352,9 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "2) Kontragent qidirish:\n"
         "Brand / ism / telefon yozing.\n\n"
-        "Masalan:\n"
+        "Yoki tez yaratish uchun shunday yozing:\n"
+        "brendnomi-MijozNomi-910175253\n\n"
+        "Misol:\n"
         "- NIKE\n"
         "- Azamat\n"
         "- 998901234567"
@@ -315,6 +368,40 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv bo‘sh. Brand/ism/tel yozing.")
         return STEP_CP_SEARCH
 
+    # ✅ FAST CREATE: brand-name-phone
+    triple = _parse_brand_name_phone(q)
+    if triple:
+        brand, client_name, phone_plus = triple
+        cp_name = f"{brand} {client_name}".strip()
+
+        try:
+            cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Kontragent yaratishda xatolik: {e}")
+            return STEP_CP_SEARCH
+
+        context.user_data["cp"] = {
+            "id": cp.get("id"),
+            "name": cp.get("name"),
+            "phone": cp.get("phone"),
+            "meta": cp.get("meta"),
+        }
+
+        pt = context.user_data.get("paytype")
+        if pt == "card":
+            await update.message.reply_text("3) Chek rasmini yuboring (foto).")
+            return STEP_CHECK
+
+        await update.message.reply_text(
+            "3) Naqt uchun summa, sana, (ixtiyoriy) vaqt kiriting.\n"
+            "Masalan: 600000-28.01.2026 14:23"
+        )
+        context.user_data.pop("amount_uzs", None)
+        context.user_data.pop("date_iso", None)
+        context.user_data.pop("time_hms", None)
+        return STEP_AMOUNT_DATE
+
+    # ✅ normal search flow
     context.user_data["cp_query"] = q
 
     try:
@@ -366,7 +453,6 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "yoki faqat:\n"
         "600000-28.01.2026"
     )
-    # cash yo‘lida ham vaqt topilmasa keyin so‘raymiz
     context.user_data.pop("amount_uzs", None)
     context.user_data.pop("date_iso", None)
     context.user_data.pop("time_hms", None)
@@ -379,11 +465,15 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw = (query.data or "").split("cpnew:", 1)[-1].strip()
     name = raw or "New Counterparty"
+
+    # Agar telefon ko‘rinishida bo‘lsa — +998 qilib yuboramiz
+    phone_plus = ""
     digits = _digits_only(raw)
-    phone = digits if len(digits) >= 7 else None
+    if len(digits) >= 7:
+        phone_plus = _normalize_phone_uz(digits)
 
     try:
-        cp = get_or_create_counterparty(name=name, phone=phone)
+        cp = get_or_create_counterparty(name=name, phone=(phone_plus or None))
     except Exception as e:
         await query.edit_message_text(f"❌ Yangi kontragent yaratishda xatolik: {e}")
         return ConversationHandler.END
@@ -417,7 +507,6 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
     text = update.message.text or ""
     amount, date_iso, time_hms = _parse_amount_date_time_flexible(text)
 
-    # mavjudlarini saqlab qolamiz
     if amount is not None:
         context.user_data["amount_uzs"] = int(amount)
     if date_iso is not None:
@@ -426,21 +515,13 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         context.user_data["time_hms"] = str(time_hms)
 
     missing = _missing_fields(context)
-
-    # vaqtni majburiy qilmasangiz:
-    # missing.discard("time")
-
     if missing:
         await update.message.reply_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
 
-    # hammasi bor -> cash bo‘lsa kanal, card bo‘lsa review yoki kanal (biz reviewdan keyin kanal qilamiz)
     pt = context.user_data.get("paytype")
     if pt == "card":
-        await update.message.reply_text(
-            "✅ Ma’lumotlar tayyor.\nTo‘g‘rimi?",
-            reply_markup=_review_keyboard(),
-        )
+        await update.message.reply_text("✅ Ma’lumotlar tayyor.\nTo‘g‘rimi?", reply_markup=_review_keyboard())
         return STEP_REVIEW
 
     return await _ask_sales_channel(update.message, context)
@@ -470,6 +551,7 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
     await file.download_to_drive(str(img_path))
     context.user_data["check_path"] = str(img_path)
 
+    # OCR (Vision)
     try:
         amount, date_iso, time_hms, raw_text = detect_amount_date_time(str(img_path))
         context.user_data["amount_uzs"] = amount if isinstance(amount, int) else None
@@ -484,19 +566,24 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return STEP_AMOUNT_DATE
 
-    # agar nimadir topilmasa — faqat shuni so‘raymiz
+    # ✅ TALAB: agar chekda sana/vaqt topilmasa -> avtomatik hozirgi real sana+vaqt qo'yamiz
+    now = datetime.now(TZ)
+    if not context.user_data.get("date_iso"):
+        context.user_data["date_iso"] = now.date().isoformat()
+    if not context.user_data.get("time_hms"):
+        context.user_data["time_hms"] = now.strftime("%H:%M:%S")
+
+    # amount topilmagan bo‘lsa — faqat amountni so‘raymiz
     missing = _missing_fields(context)
-    # vaqtni majburiy qilmasangiz:
-    # missing.discard("time")
+    # date/time endi auto bo'ldi, shuning uchun ular missing bo'lmaydi
 
     if missing:
         await msg.reply_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
 
-    # hammasi topildi -> review
     a_show = f"{context.user_data['amount_uzs']:,} UZS"
     d_show = context.user_data["date_iso"]
-    t_show = context.user_data.get("time_hms") or "00:00:00"
+    t_show = context.user_data["time_hms"]
 
     await msg.reply_text(
         "✅ Chek o‘qildi.\n\n"
@@ -517,8 +604,6 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "edit":
         missing = _missing_fields(context)
-        # vaqtni majburiy qilmasangiz:
-        # missing.discard("time")
         await query.edit_message_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
 
@@ -526,9 +611,6 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STEP_REVIEW
 
     missing = _missing_fields(context)
-    # vaqtni majburiy qilmasangiz:
-    # missing.discard("time")
-
     if missing:
         await query.edit_message_text(_prompt_for_missing(missing))
         return STEP_AMOUNT_DATE
