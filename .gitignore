@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Secrets
+*.json
+app/zakariyyo-*.json
+
+
+# secrets
+app/*.json
+
