@@ -205,6 +205,10 @@ def create_cashin(
 # ================= FILE ATTACH (generic) =================
 
 def _attach_file_generic(entity: str, doc_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """
+    Bu funksiya /files endpoint orqali attachment sifatida yuboradi (Файлы bo'limiga tushadi).
+    PaymentIn/CashIn/CustomerOrder uchun aynan shu kerak.
+    """
     if not doc_id or not file_path or not os.path.exists(file_path):
         return None
 
@@ -234,6 +238,10 @@ def attach_file_to_paymentin(paymentin_id: str, file_path: str) -> Optional[Dict
 
 def attach_file_to_cashin(cashin_id: str, file_path: str) -> Optional[Dict[str, Any]]:
     return _attach_file_generic("cashin", cashin_id, file_path)
+
+
+def attach_file_to_customerorder(order_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    return _attach_file_generic("customerorder", order_id, file_path)
 
 
 # ==================== PRICE TYPES (Цены продажа) ====================
@@ -345,8 +353,34 @@ def create_product(
     return ms_post("/entity/product", payload)
 
 
+# ==================== PRODUCT IMAGE (Изображения) ====================
+
 def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[str, Any]]:
-    return _attach_file_generic("product", product_id, file_path)
+    """
+    Rasmni Product карточкасидаги "Изображения" bo‘limiga yuklaydi.
+    MUHIM: bu /files emas, /images endpoint.
+    """
+    if not product_id or not file_path or not os.path.exists(file_path):
+        return None
+
+    url = _url(f"/entity/product/{product_id}/images")
+
+    filename = os.path.basename(file_path)
+    mime, _ = mimetypes.guess_type(filename)
+    mime = mime or "application/octet-stream"
+
+    headers = _headers().copy()
+    headers.pop("Content-Type", None)  # multipart/form-data uchun
+
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (filename, f, mime)}
+            r = requests.post(url, headers=headers, files=files, timeout=TIMEOUT)
+            r.raise_for_status()
+            return r.json() if r.text else {"ok": True}
+    except Exception as e:
+        logger.warning("Product image upload failed: product=%s file=%s err=%s", product_id, file_path, e)
+        return None
 
 
 # ==================== CUSTOMER ORDER (Продажи → Заказы покупателей) ====================
@@ -371,7 +405,3 @@ def create_customerorder(
     if positions:
         payload["positions"] = positions
     return ms_post("/entity/customerorder", payload)
-
-
-def attach_file_to_customerorder(order_id: str, file_path: str) -> Optional[Dict[str, Any]]:
-    return _attach_file_generic("customerorder", order_id, file_path)
