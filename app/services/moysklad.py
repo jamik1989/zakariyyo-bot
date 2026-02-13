@@ -245,12 +245,6 @@ def attach_file_to_customerorder(order_id: str, file_path: str) -> Optional[Dict
 
 
 # ==================== PRICE TYPES (Цены продажа) ====================
-# MUHIM: sizda /entity/pricetype YO'Q.
-# PriceType lar company settings orqali keladi:
-#   GET /context/companysettings/pricetype
-#
-# Sizdagi muammo: bu endpoint ba'zida LIST qaytaradi (dict emas).
-# Shuni to'g'riladik.
 
 def get_price_types(limit: int = 100) -> List[Dict[str, Any]]:
     """
