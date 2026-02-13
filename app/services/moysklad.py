@@ -357,30 +357,51 @@ def create_product(
 
 def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[str, Any]]:
     """
-    Rasmni Product карточкасидаги "Изображения" bo‘limiga yuklaydi.
-    MUHIM: bu /files emas, /images endpoint.
+    Product карточкасидаги "Изображения" bo‘limiga yuklash.
+    Agar "file" field ishlamasa, "image" field bilan qayta urinadi.
     """
     if not product_id or not file_path or not os.path.exists(file_path):
+        logger.warning("Product image: missing product_id or file not found. product=%s file=%s", product_id, file_path)
         return None
 
     url = _url(f"/entity/product/{product_id}/images")
-
     filename = os.path.basename(file_path)
     mime, _ = mimetypes.guess_type(filename)
     mime = mime or "application/octet-stream"
 
     headers = _headers().copy()
-    headers.pop("Content-Type", None)  # multipart/form-data uchun
+    headers.pop("Content-Type", None)  # multipart uchun
 
-    try:
-        with open(file_path, "rb") as f:
-            files = {"file": (filename, f, mime)}
-            r = requests.post(url, headers=headers, files=files, timeout=TIMEOUT)
-            r.raise_for_status()
+    def _try(field_name: str) -> Optional[Dict[str, Any]]:
+        try:
+            with open(file_path, "rb") as f:
+                files = {field_name: (filename, f, mime)}
+                r = requests.post(url, headers=headers, files=files, timeout=TIMEOUT)
+
+            # Muhim debug:
+            if not r.ok:
+                logger.warning(
+                    "Product image upload HTTP %s. field=%s url=%s body=%s",
+                    r.status_code, field_name, url, r.text[:2000]
+                )
+                return None
+
             return r.json() if r.text else {"ok": True}
-    except Exception as e:
-        logger.warning("Product image upload failed: product=%s file=%s err=%s", product_id, file_path, e)
-        return None
+        except Exception as e:
+            logger.warning("Product image upload failed: field=%s product=%s file=%s err=%s", field_name, product_id, file_path, e)
+            return None
+
+    # 1) Avval standart 'file'
+    res = _try("file")
+    if res is not None:
+        return res
+
+    # 2) Fallback: ba'zi akkauntlarda field nomi 'image' bo'lishi mumkin
+    res2 = _try("image")
+    if res2 is not None:
+        return res2
+
+    return None
 
 
 # ==================== CUSTOMER ORDER (Продажи → Заказы покупателей) ====================
