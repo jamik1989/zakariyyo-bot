@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 app/storage/app.db
 app/storage/tmp/
+
+# secrets
+app/*.json
+
