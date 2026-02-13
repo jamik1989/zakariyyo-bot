@@ -1,14 +1,7 @@
+.env
+venv/
+.venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.Python
-
-# Secrets
-*.json
-app/zakariyyo-*.json
-
-
-# secrets
-app/*.json
-
+app/storage/app.db
+app/storage/tmp/
