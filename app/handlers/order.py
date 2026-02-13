@@ -103,7 +103,6 @@ def _normalize_phone_uz(phone_raw: str) -> str:
 def _fmt_amount(amount: Optional[int]) -> str:
     if not isinstance(amount, int):
         return "TOPILMADI"
-    # Telegramda chiroyli ko‘rinishi uchun bo‘sh joy bilan
     return f"{amount:,}".replace(",", " ")
 
 
@@ -264,7 +263,7 @@ def _infer_brand_client_from_cp_name(cp_name: str) -> Tuple[str, str]:
 
 async def kiritish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
-        await update.message.reply_text("❌ Avval /login qiling.")
+        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
     await update.message.reply_text("1) To‘lov turini tanlang:", reply_markup=_paytype_keyboard())
@@ -339,7 +338,7 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cp_id = (query.data or "").split("cp:", 1)[-1]
     cand = (context.user_data.get("cp_candidates") or {}).get(cp_id)
     if not cand:
-        await query.edit_message_text("❌ Kontragent topilmadi. Qaytadan /kiritish qiling.")
+        await query.edit_message_text("❌ Kontragent topilmadi. Qaytadan /kiritish qiling.", reply_markup=None)
         return ConversationHandler.END
 
     context.user_data["cp"] = {"id": cand.get("id"), "name": cand.get("name"), "phone": cand.get("phone"), "meta": cand.get("meta")}
@@ -408,7 +407,6 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         if context.user_data.get("paytype") == "cash" and not context.user_data.get("sales_channel_meta"):
             return await _ask_sales_channel(update.message, context)
 
-        # editdan keyin: review qaytaramiz
         await update.message.reply_text(_build_review_text(context), reply_markup=_review_keyboard())
         return STEP_REVIEW
 
@@ -466,7 +464,6 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         context.user_data.pop("edit_target", None)
 
     else:
-        # default: karta yo‘lida OCR fallback bo‘lsa amount/date/time ham qabul qilaveradi
         amount = _parse_amount(text)
         if amount is not None:
             context.user_data["amount_uzs"] = amount
@@ -484,7 +481,7 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
 async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if context.user_data.get("paytype") != "card":
-        await msg.reply_text("❌ Bu bosqich karta uchun. /kiritish dan qaytadan boshlang.")
+        await msg.reply_text("❌ Bu bosqich karta uchun. /kiritish dan qaytadan boshlang.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
     if msg.document and (
@@ -509,7 +506,6 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["time_hms"] = time_hms
     context.user_data["ocr_text"] = raw_text
 
-    # ✅ date/time topilmasa hozirgi
     _ensure_now_date_time(context)
 
     if not isinstance(context.user_data.get("amount_uzs"), int):
@@ -526,12 +522,11 @@ async def on_sales_channel_chosen(update: Update, context: ContextTypes.DEFAULT_
     sc_id = (query.data or "").split("sc:", 1)[-1]
     sc_meta = (context.user_data.get("channels_map") or {}).get(sc_id)
     if not sc_meta:
-        await query.edit_message_text("❌ Kanal topilmadi. Qaytadan /kiritish qiling.")
+        await query.edit_message_text("❌ Kanal topilmadi. Qaytadan /kiritish qiling.", reply_markup=None)
         return ConversationHandler.END
 
     context.user_data["sales_channel_meta"] = sc_meta
 
-    # ✅ kanal tanlangach: review chiqaramiz (MoySkladga hali yubormaymiz!)
     await query.edit_message_text(_build_review_text(context), reply_markup=_review_keyboard())
     return STEP_REVIEW
 
@@ -579,11 +574,14 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     operator = context.user_data.get("operator", {})
 
     if pt not in ("cash", "card") or not cp.get("meta") or not sc_meta or not isinstance(amount, int) or amount <= 0 or not date_iso:
-        await query.edit_message_text("❌ Ma’lumot yetarli emas. Qaytadan /kiritish qiling.")
+        await query.edit_message_text("❌ Ma’lumot yetarli emas. Qaytadan /kiritish qiling.", reply_markup=None)
         return ConversationHandler.END
 
     org = get_default_organization()
     desc = f"Counterparty: {cp.get('name')} | Phone: {cp.get('phone') or ''} | Operator: {operator.get('name')} ({operator.get('phone')})"
+
+    created = None
+    doc_kind = "Hujjat"
 
     if pt == "card":
         created = create_paymentin(
@@ -596,7 +594,7 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description=desc,
         )
         doc_kind = "Входящий платёж"
-        if created.get("id") and check_path and os.path.exists(check_path):
+        if created and created.get("id") and check_path and os.path.exists(check_path):
             attach_file_to_paymentin(str(created["id"]), str(check_path))
     else:
         created = create_cashin(
@@ -609,7 +607,7 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description=desc,
         )
         doc_kind = "Приходный ордер"
-        if created.get("id") and check_path and os.path.exists(check_path):
+        if created and created.get("id") and check_path and os.path.exists(check_path):
             attach_file_to_cashin(str(created["id"]), str(check_path))
 
     # ✅ NEW: /tasdiq moduliga OPEN yozib qo'yamiz
@@ -628,22 +626,18 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 counterparty_meta=cp["meta"],
             )
     except Exception:
-        # tasdiq yozilmasa ham to'lov ishlashda davom etadi
         pass
 
-    await query.edit_message_text(
-        f"✅ MoySklad’ga {doc_kind} yuborildi (черновик).\n"
-        f"📄 Doc: {created.get('name','N/A')}\n"
-        f"🆔 ID: {created.get('id','N/A')}"
-    )
-
+    # ✅ Operatorga: faqat bitta, final xabar + menu
+    await query.edit_message_text("✅ Sizning maʼlumotlaringiz yuborildi.", reply_markup=None)
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="✅ Tayyor. Keyingi buyurtma uchun /kiritish ni bosing.",
+        text="✅ Sizning maʼlumotlaringiz yuborildi.",
         reply_markup=_menu_keyboard(),
     )
 
-    if GROUP_CHAT_ID:
+    # ✅ Kanalga (GROUP_CHAT_ID) to‘liq info ketaveradi (bu admin/monitor uchun)
+    if GROUP_CHAT_ID and created:
         caption = (
             f"✅ {doc_kind} (черновик)\n\n"
             f"👤 Kontragent: {_cp_title(cp)}\n"
@@ -659,19 +653,6 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(chat_id=GROUP_CHAT_ID, photo=f, caption=caption)
         else:
             await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=caption)
-
-
-    # ✅ Operatorga yakuniy javob (oddiy)
-    try:
-        chat_id = update.effective_chat.id if update and update.effective_chat else None
-        if chat_id:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="✅ Sizning maʼlumotlaringiz yuborildi.",
-                reply_markup=_menu_keyboard(),
-            )
-    except Exception:
-        pass
 
     _cleanup_after_done(context)
     return ConversationHandler.END
