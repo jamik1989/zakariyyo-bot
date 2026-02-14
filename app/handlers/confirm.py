@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from telegram import (
     Update,
@@ -16,7 +16,12 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import CONFIRM_CHAT_ID
-from ..db import list_open_confirms, get_confirm, mark_confirm_done
+from ..db import (
+    list_open_confirms,
+    get_confirm,
+    mark_confirm_done,
+    create_confirm,
+)
 from ..services.moysklad import (
     get_default_organization,
     get_sales_channels,
@@ -26,16 +31,19 @@ from ..services.moysklad import (
     attach_image_to_product,
     create_customerorder,
     attach_file_to_customerorder,
+    get_or_create_counterparty,
 )
 
-# States (main.py bilan MOS)
-CF_PICK, CF_PHOTO, CF_KIND, CF_SIZE, CF_QTY, CF_CHANNEL, CF_GROUP, CF_PRICE, CF_REVIEW, CF_EDIT_CHOOSE, CF_EDIT_VALUE = range(11)
+# ✅ States (main.py bilan MOS) — 12 ta
+CF_PICK, CF_NEW_CP, CF_PHOTO, CF_KIND, CF_SIZE, CF_QTY, CF_CHANNEL, CF_GROUP, CF_PRICE, CF_REVIEW, CF_EDIT_CHOOSE, CF_EDIT_VALUE = range(12)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 TZ = ZoneInfo("Asia/Tashkent")
 
+
+# ================= UI =================
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -69,8 +77,38 @@ def _edit_choose_kb() -> InlineKeyboardMarkup:
     ])
 
 
+# ================= helpers =================
+
 def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
+
+
+def _normalize_phone_uz(phone_raw: str) -> str:
+    digits = _digits_only(phone_raw)
+    if not digits:
+        return ""
+    if len(digits) == 9:
+        return "+998" + digits
+    if len(digits) == 12 and digits.startswith("998"):
+        return "+" + digits
+    if len(digits) > 12:
+        return "+998" + digits[-9:]
+    if 9 < len(digits) < 12:
+        return "+998" + digits[-9:]
+    return "+" + digits
+
+
+def _parse_brand_client_phone(text: str):
+    # format: BRAND-Client Name-910175253
+    parts = [p.strip() for p in (text or "").strip().split("-", maxsplit=2)]
+    if len(parts) != 3:
+        return None
+    brand = parts[0].strip().upper()
+    client = parts[1].strip()
+    phone_plus = _normalize_phone_uz(parts[2])
+    if not brand or not client or not phone_plus:
+        return None
+    return brand, client, phone_plus
 
 
 def _fmt_int(n: Optional[int]) -> str:
@@ -81,6 +119,28 @@ def _fmt_int(n: Optional[int]) -> str:
 
 def _card_line(label: str, value: str) -> str:
     return f"*{label}:* {value}"
+
+
+def _ensure_confirm_data(context: ContextTypes.DEFAULT_TYPE):
+    d = context.user_data.get("confirm_data") or {}
+    d.setdefault("brand", "")
+    d.setdefault("client_name", "")
+    d.setdefault("phone_plus", "")
+    d.setdefault("counterparty_meta", {})
+    d.setdefault("image_path", "")
+
+    d.setdefault("item_type", "")
+    d.setdefault("size", "")
+    d.setdefault("qty", None)
+    d.setdefault("price_uzs", None)
+
+    d.setdefault("sales_channel_meta", None)
+    d.setdefault("sales_channel_name", "")
+
+    d.setdefault("group_meta", None)
+    d.setdefault("group_name", "")
+
+    context.user_data["confirm_data"] = d
 
 
 def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -101,10 +161,8 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     img_ok = bool(d.get("image_path") and os.path.exists(d["image_path"]))
     img = "BOR ✅" if img_ok else "YO‘Q ❌"
 
-    # 9/9
-    progress = "9/9"
     return (
-        f"🧾 *Tasdiq — {progress}*\n"
+        f"🧾 *Tasdiq — 9/9*\n"
         f"━━━━━━━━━━━━━━\n"
         f"✅ *Tekshiruv kartochkasi*\n\n"
         f"{_card_line('🏷 Brend', brand)}\n"
@@ -183,28 +241,6 @@ async def _ask_product_group(update_obj, context: ContextTypes.DEFAULT_TYPE):
     return CF_GROUP
 
 
-def _ensure_confirm_data(context: ContextTypes.DEFAULT_TYPE):
-    d = context.user_data.get("confirm_data") or {}
-    d.setdefault("brand", "")
-    d.setdefault("client_name", "")
-    d.setdefault("phone_plus", "")
-    d.setdefault("counterparty_meta", {})
-    d.setdefault("image_path", "")
-
-    d.setdefault("item_type", "")
-    d.setdefault("size", "")
-    d.setdefault("qty", None)
-    d.setdefault("price_uzs", None)
-
-    d.setdefault("sales_channel_meta", None)
-    d.setdefault("sales_channel_name", "")
-
-    d.setdefault("group_meta", None)
-    d.setdefault("group_name", "")
-
-    context.user_data["confirm_data"] = d
-
-
 # ================== FLOW ==================
 
 async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,17 +255,12 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     rows = list_open_confirms(op_id, limit=20)
-    if not rows:
-        await update.message.reply_text(
-            "📭 Tasdiqlash uchun OPEN buyurtma yo‘q.\nAvval /kiritish orqali buyurtma kiriting.",
-            reply_markup=_menu_keyboard(),
-        )
-        return ConversationHandler.END
 
-    kb = []
-    for r in rows:
-        title = f"{r.get('brand','')} | {r.get('phone_plus','')}"
-        kb.append([InlineKeyboardButton(title.strip(), callback_data=f"cfpick:{r['id']}")])
+    kb = [[InlineKeyboardButton("➕ Yangi tasdiq yaratish", callback_data="cfnew")]]
+    if rows:
+        for r in rows:
+            title = f"{r.get('brand','')} | {r.get('phone_plus','')}".strip()
+            kb.append([InlineKeyboardButton(title, callback_data=f"cfpick:{r['id']}")])
 
     await update.message.reply_text(
         "🧾 *Tasdiq — 1/9*\n"
@@ -240,6 +271,86 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CF_PICK
 
+
+# ---------- NEW CONFIRM (cfnew) ----------
+
+async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(
+        "🧾 *Tasdiq — 1/9*\n"
+        "━━━━━━━━━━━━━━\n"
+        "🆕 Yangi tasdiq yaratish\n\n"
+        "Format: BRAND-MijozNomi-910175253\n"
+        "Masalan: LEAP-Akmal-910175253",
+        parse_mode="Markdown",
+    )
+    return CF_NEW_CP
+
+
+async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("operator"):
+        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
+        return ConversationHandler.END
+
+    triple = _parse_brand_client_phone(update.message.text or "")
+    if not triple:
+        await update.message.reply_text(
+            "❌ Format noto‘g‘ri.\n"
+            "To‘g‘ri format: BRAND-MijozNomi-910175253\n"
+            "Masalan: LEAP-Akmal-910175253"
+        )
+        return CF_NEW_CP
+
+    brand, client_name, phone_plus = triple
+
+    # MoySklad kontragent: topamiz/yaratamiz
+    cp_name = f"{brand} {client_name}".strip()
+    cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
+
+    op = context.user_data["operator"]
+    op_id = int(op.get("id") or 0)
+
+    if not op_id or not cp or not cp.get("meta"):
+        await update.message.reply_text("❌ Kontragent yaratishda xatolik. Qayta urinib ko‘ring.")
+        return ConversationHandler.END
+
+    # DB ga OPEN confirm yozamiz
+    cid = create_confirm(
+        operator_id=op_id,
+        brand=brand,
+        client_name=client_name,
+        phone_plus=phone_plus,
+        counterparty_meta=cp["meta"],
+    )
+
+    context.user_data["confirm_id"] = int(cid)
+    context.user_data["confirm_data"] = {
+        "brand": brand,
+        "client_name": client_name,
+        "phone_plus": phone_plus,
+        "counterparty_meta": cp["meta"],
+        "image_path": "",
+        "item_type": "",
+        "size": "",
+        "qty": None,
+        "price_uzs": None,
+        "sales_channel_meta": None,
+        "sales_channel_name": "",
+        "group_meta": None,
+        "group_name": "",
+    }
+
+    await update.message.reply_text(
+        "🧾 *Tasdiq — 2/9*\n"
+        "━━━━━━━━━━━━━━\n"
+        "🖼 Buyurtma rasmini yuboring (foto yoki rasm-file).",
+        parse_mode="Markdown",
+    )
+    return CF_PHOTO
+
+
+# ---------- PICK EXISTING ----------
 
 async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -274,23 +385,29 @@ async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(
         "🧾 *Tasdiq — 2/9*\n"
         "━━━━━━━━━━━━━━\n"
-        "🖼 Buyurtma rasmini yuboring (foto).",
+        "🖼 Buyurtma rasmini yuboring (foto yoki rasm-file).",
         parse_mode="Markdown",
     )
     return CF_PHOTO
 
 
+# ---------- PHOTO ----------
+
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     _ensure_confirm_data(context)
 
-    if not msg.photo:
-        await msg.reply_text("❌ Iltimos rasm (foto) yuboring.")
-        return CF_PHOTO
-
-    file = await msg.photo[-1].get_file()
     img_path = TMP_DIR / f"confirm_{msg.message_id}.jpg"
-    await file.download_to_drive(str(img_path))
+
+    if msg.photo:
+        file = await msg.photo[-1].get_file()
+        await file.download_to_drive(str(img_path))
+    elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+        file = await msg.document.get_file()
+        await file.download_to_drive(str(img_path))
+    else:
+        await msg.reply_text("❌ Iltimos rasm yuboring (foto yoki rasm-file).")
+        return CF_PHOTO
 
     d = context.user_data["confirm_data"]
     d["image_path"] = str(img_path)
@@ -304,6 +421,8 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CF_KIND
 
+
+# ---------- KIND / SIZE / QTY ----------
 
 async def on_kind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
@@ -362,9 +481,10 @@ async def on_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["qty"] = qty
     context.user_data["confirm_data"] = d
 
-    # 6) kanal prodaj
     return await _ask_sales_channel(update.message, context)
 
+
+# ---------- CHANNEL / GROUP / PRICE ----------
 
 async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -382,7 +502,6 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["sales_channel_name"] = ch.get("name") or ""
     context.user_data["confirm_data"] = d
 
-    # 7) group tanlash
     return await _ask_product_group(q, context)
 
 
@@ -402,7 +521,6 @@ async def on_group_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["group_name"] = g.get("name") or ""
     context.user_data["confirm_data"] = d
 
-    # 8) price
     await q.edit_message_text(
         "🧾 *Tasdiq — 8/9*\n"
         "━━━━━━━━━━━━━━\n"
@@ -432,6 +550,8 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
+# ---------- REVIEW / SEND ----------
+
 async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -439,7 +559,15 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action = (q.data or "").split("cfr:", 1)[-1]
     if action == "back":
-        await q.edit_message_text("⬅️ Orqaga qayting: /tasdiq ni bosing.", reply_markup=None)
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="⬅️ Orqaga qaytdik. /tasdiq ni bosing.",
+            reply_markup=_menu_keyboard(),
+        )
         return ConversationHandler.END
 
     if action == "edit":
@@ -449,7 +577,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action != "send":
         return CF_REVIEW
 
-    # ===== SEND =====
     op = context.user_data["operator"]
     cid = int(context.user_data.get("confirm_id") or 0)
     d = context.user_data["confirm_data"]
@@ -483,9 +610,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Kanal prodaj yoki Группа tanlanmagan.")
         return ConversationHandler.END
 
-    # MoySklad moment
     moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-
     product_name = f"{brand} {item_type} {size}".strip()
 
     desc = (
@@ -505,12 +630,10 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         org = get_default_organization()
 
-        # ✅ PriceType meta topamiz (create QILMAYMIZ!)
         pt_meta = find_price_type_meta_by_name("Цена продажи")
         if not pt_meta:
             pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
 
-        # 1) create product
         prod = create_product(
             name=product_name,
             productfolder_meta=gp_meta,
@@ -520,11 +643,9 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prod_id = str(prod.get("id") or "")
         prod_meta = prod.get("meta")
 
-        # 2) attach image to product
         if prod_id and image_path and os.path.exists(image_path):
             attach_image_to_product(prod_id, image_path)
 
-        # 3) create customerorder (черновик) with positions
         positions = []
         if prod_meta:
             positions = [{
@@ -543,15 +664,14 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         order_id = str(order.get("id") or "")
 
-        # 4) attach file to order (optional)
         if order_id and image_path and os.path.exists(image_path):
             attach_file_to_customerorder(order_id, image_path)
 
         mark_confirm_done(int(op["id"]), cid)
 
-        # ✅ Operatorga: faqat 1 ta final xabar (ikki marta chiqmasin)
+        # ✅ faqat 1 ta final xabar
         try:
-            await q.message.delete()  # review xabarini o‘chiradi
+            await q.message.delete()
         except Exception:
             pass
 
@@ -561,7 +681,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_menu_keyboard(),
         )
 
-        # Telegram confirm kanaliga nusxa
         if CONFIRM_CHAT_ID:
             caption = (
                 f"✅ Заказ покупателя (черновик)\n\n"
@@ -587,12 +706,13 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
         return ConversationHandler.END
 
-    # cleanup
-    for k in ("confirm_id", "confirm_data", "cf_channels_map", "cf_groups_map"):
+    for k in ("confirm_id", "confirm_data", "cf_channels_map", "cf_groups_map", "edit_key"):
         context.user_data.pop(k, None)
 
     return ConversationHandler.END
 
+
+# ---------- EDIT ----------
 
 async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -636,42 +756,34 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if key == "brand":
         d["brand"] = val.strip().upper()
-
     elif key == "client":
         d["client_name"] = val.strip()
-
     elif key == "phone":
-        d["phone_plus"] = val.strip()
-
+        d["phone_plus"] = _normalize_phone_uz(val.strip())
     elif key == "item":
         d["item_type"] = val.strip()
-
     elif key == "size":
         s = val.lower().replace("х", "x").replace("*", "x").replace(" ", "")
         if "x" not in s:
             await update.message.reply_text("❌ Razmer noto‘g‘ri. Masalan: 10x5")
             return CF_EDIT_VALUE
         d["size"] = s
-
     elif key == "qty":
         dd = _digits_only(val)
         if not dd:
             await update.message.reply_text("❌ Soni noto‘g‘ri. Masalan: 3000")
             return CF_EDIT_VALUE
         d["qty"] = int(dd)
-
     elif key == "price":
         dd = _digits_only(val)
         if not dd:
             await update.message.reply_text("❌ Narx noto‘g‘ri. Masalan: 450")
             return CF_EDIT_VALUE
         d["price_uzs"] = int(dd)
-
     elif key == "channel":
         context.user_data.pop("edit_key", None)
         await update.message.reply_text("📊 Kanalni tanlaymiz...")
         return await _ask_sales_channel(update.message, context)
-
     elif key == "group":
         context.user_data.pop("edit_key", None)
         await update.message.reply_text("📁 Группа ni tanlaymiz...")
