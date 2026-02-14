@@ -67,6 +67,7 @@ from .handlers.confirm import (
     on_qty,
     on_channel_pick,
     on_group_pick,
+    on_groups_page,   # ✅ MUHIM (paging uchun)
     on_price,
     on_review,
     on_edit_choose,
@@ -202,7 +203,7 @@ def build_app() -> Application:
     confirm_conv = ConversationHandler(
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
-            # ✅ MUHIM: cfnew birinchi turadi
+
             CF_PICK: [
                 CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
@@ -212,7 +213,6 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)
             ],
 
-            # ✅ Eng xavfsiz: Document.ALL (confirm.py ichida mime tekshirasiz)
             CF_PHOTO: [
                 MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)
             ],
@@ -233,8 +233,10 @@ def build_app() -> Application:
                 CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")
             ],
 
+            # ✅ MUHIM TUZATISH — paging qo‘shildi
             CF_GROUP: [
-                CallbackQueryHandler(on_group_pick, pattern=r"^cfg:")
+                CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
+                CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
             ],
 
             CF_PRICE: [
