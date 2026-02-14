@@ -189,8 +189,6 @@ def build_app() -> Application:
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
                 CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
             ],
-
-            # NEW: kontragent ma'lumotini matn bilan olamiz (BRAND-Mijoz-910...)
             CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
 
             CF_PHOTO: [MessageHandler(filters.PHOTO, on_photo)],
@@ -201,7 +199,6 @@ def build_app() -> Application:
 
             CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
 
-            # ✅ MUHIM: pattern r"^cfg:" — confirm.py ham shu prefix bilan yuboradi
             CF_GROUP: [CallbackQueryHandler(on_group_pick, pattern=r"^cfg:")],
 
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
