@@ -57,8 +57,13 @@ from .handlers.order import (
 from .handlers.confirm import (
     tasdiq_start,
     on_pick,
+
+    # ✅ NEW: yangi tasdiq (kiritishsiz)
     on_new_confirm_click,
     on_new_confirm_cp,
+    on_new_cp_pick,
+    on_new_cp_create,
+
     on_photo,
     on_kind,
     on_size,
@@ -172,7 +177,6 @@ def build_app() -> Application:
             STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
 
             STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
-
             STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
@@ -187,9 +191,15 @@ def build_app() -> Application:
         states={
             CF_PICK: [
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
-                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
+                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:"),  # ✅ NEW
             ],
-            CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+
+            # ✅ NEW: kontragent qidirish/tanlash/yangi yaratish
+            CF_NEW_CP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp),
+                CallbackQueryHandler(on_new_cp_pick, pattern=r"^cfcp:"),
+                CallbackQueryHandler(on_new_cp_create, pattern=r"^cfcpnew:"),
+            ],
 
             CF_PHOTO: [MessageHandler(filters.PHOTO, on_photo)],
 
@@ -199,6 +209,7 @@ def build_app() -> Application:
 
             CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
 
+            # ✅ MUHIM: pattern r"^cfg:" — confirm.py ham shu prefix bilan yuboradi
             CF_GROUP: [CallbackQueryHandler(on_group_pick, pattern=r"^cfg:")],
 
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],

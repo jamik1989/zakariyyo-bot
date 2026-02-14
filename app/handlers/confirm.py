@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List  # ✅ List qo‘shildi
 
 from telegram import (
     Update,
@@ -16,7 +16,12 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import CONFIRM_CHAT_ID
-from ..db import list_open_confirms, get_confirm, mark_confirm_done, create_confirm
+from ..db import (
+    list_open_confirms,
+    get_confirm,
+    mark_confirm_done,
+    create_confirm,  # ✅ NEW: /tasdiq ichida yangi confirm yaratish uchun
+)
 from ..services.moysklad import (
     get_default_organization,
     get_sales_channels,
@@ -26,7 +31,8 @@ from ..services.moysklad import (
     attach_image_to_product,
     create_customerorder,
     attach_file_to_customerorder,
-    get_or_create_counterparty,  # ✅ ADD
+    get_or_create_counterparty,  # ✅ NEW
+    ms_get,  # ✅ NEW
 )
 
 # States (main.py bilan MOS)
@@ -74,38 +80,29 @@ def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
 
 
-def _normalize_phone_uz(phone_raw: str) -> str:
-    digits = _digits_only(phone_raw)
-    if not digits:
-        return ""
-    if len(digits) == 9:
-        return "+998" + digits
-    if len(digits) == 12 and digits.startswith("998"):
-        return "+" + digits
-    if len(digits) > 12:
-        return "+998" + digits[-9:]
-    if 9 < len(digits) < 12:
-        return "+998" + digits[-9:]
-    return "+" + digits
-
-
-def _parse_brand_client_phone(text: str):
-    # format: BRAND-Client Name-910175253
-    parts = [p.strip() for p in (text or "").strip().split("-", maxsplit=2)]
-    if len(parts) != 3:
-        return None
-    brand = parts[0].strip().upper()
-    client = parts[1].strip()
-    phone_plus = _normalize_phone_uz(parts[2])
-    if not brand or not client or not phone_plus:
-        return None
-    return brand, client, phone_plus
-
-
 def _fmt_int(n: Optional[int]) -> str:
     if not isinstance(n, int):
         return "N/A"
     return f"{n:,}".replace(",", " ")
+
+
+# ✅ NEW: Counterparty helpers (order.py dagidek)
+def _cp_title(cp: Dict[str, Any]) -> str:
+    name = (cp.get("name") or "").strip() or "NoName"
+    phone = (cp.get("phone") or "").strip()
+    return f"{name} ({phone})" if phone else name
+
+
+def _search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    q = (query or "").strip()
+    if not q:
+        return []
+    digits = _digits_only(q)
+    if len(digits) >= 7:
+        data = ms_get("/entity/counterparty", params={"filter": f"phone~{digits}", "limit": limit})
+    else:
+        data = ms_get("/entity/counterparty", params={"search": q, "limit": limit})
+    return data.get("rows", []) or []
 
 
 def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -179,6 +176,7 @@ async def _ask_product_group(update_obj, context: ContextTypes.DEFAULT_TYPE):
     groups = groups[:10]
     context.user_data["cf_groups_map"] = {g["id"]: g for g in groups}
 
+    # ✅ MUHIM: callback_data cfg:<id> (main.py pattern r"^cfg:")
     kb = [[InlineKeyboardButton(g["name"], callback_data=f"cfg:{g['id']}")] for g in groups]
     markup = InlineKeyboardMarkup(kb)
 
@@ -228,8 +226,8 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = list_open_confirms(op_id, limit=20)
 
     kb = []
-    # ✅ NEW: manual create
-    kb.append([InlineKeyboardButton("➕ Yangi tasdiq yaratish", callback_data="cfnew")])
+    # ✅ NEW: Yangi tasdiq yaratish tugmasi (kiritishsiz ham ishlaydi)
+    kb.append([InlineKeyboardButton("➕ Yangi tasdiq yaratish", callback_data="cfnew:start")])
 
     if rows:
         for r in rows:
@@ -237,14 +235,16 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb.append([InlineKeyboardButton(title.strip(), callback_data=f"cfpick:{r['id']}")])
 
         await update.message.reply_text(
-            "✅ Tasdiqlash: qaysi brend/telefon bo‘yicha buyurtma yuboramiz?",
+            "✅ Tasdiqlash: qaysi brend/telefon bo‘yicha buyurtma yuboramiz?\n\n"
+            "Yoki pastdan ➕ Yangi tasdiq yaratish ni tanlang.",
             reply_markup=InlineKeyboardMarkup(kb),
         )
         return CF_PICK
 
     # OPEN yo‘q bo‘lsa ham: yangi yaratish tugmasi chiqadi
     await update.message.reply_text(
-        "📭 OPEN buyurtma yo‘q.\nLekin qo‘lda tasdiq yaratishingiz mumkin:",
+        "📭 Tasdiqlash uchun OPEN buyurtma yo‘q.\n"
+        "Lekin siz ➕ Yangi tasdiq yaratish orqali yangi tasdiq ochishingiz mumkin.",
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return CF_PICK
@@ -253,57 +253,86 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+
+    if not context.user_data.get("operator"):
+        await q.edit_message_text("❌ Avval /login qiling.", reply_markup=None)
+        return ConversationHandler.END
+
+    # temp map tozalab qo‘yamiz
+    context.user_data.pop("cf_new_cp_map", None)
+
     await q.edit_message_text(
-        "🆕 Yangi tasdiq yaratish\n\n"
-        "Format: BRAND-MijozNomi-910175253\n"
-        "Masalan: LEAP-Akmal-910175253"
+        "🆕 Yangi tasdiq — 1/9\n\n"
+        "🔎 Kontragent qidiring:\n"
+        "Brand / ism / telefon yozing.\n\n"
+        "Masalan: LEAP yoki 998901234567",
+        reply_markup=None,
     )
     return CF_NEW_CP
 
 
 async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("operator"):
-        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
-        return ConversationHandler.END
-
-    triple = _parse_brand_client_phone(update.message.text or "")
-    if not triple:
-        await update.message.reply_text(
-            "❌ Format noto‘g‘ri.\n"
-            "To‘g‘ri format: BRAND-MijozNomi-910175253\n"
-            "Masalan: LEAP-Akmal-910175253"
-        )
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("❌ Qidiruv bo‘sh. Yozing.")
         return CF_NEW_CP
 
-    brand, client_name, phone_plus = triple
+    rows = _search_counterparties(text, limit=10)
+    context.user_data["cf_new_cp_map"] = {r["id"]: r for r in rows if r.get("id")}
 
-    # MoySklad’da kontragentni topamiz/yaratamiz (telefon bo‘yicha)
-    cp_name = f"{brand} {client_name}".strip()
-    cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
+    kb = []
+    for r in rows[:10]:
+        rid = r.get("id")
+        if rid:
+            kb.append([InlineKeyboardButton(_cp_title(r), callback_data=f"cfcp:{rid}")])
 
-    op = context.user_data["operator"]
+    kb.append([InlineKeyboardButton("➕ Yangi kontragent yaratish", callback_data=f"cfcpnew:{text}")])
+
+    await update.message.reply_text(
+        "Topilgan kontragentlar:",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return CF_NEW_CP
+
+
+async def on_new_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    op = context.user_data.get("operator") or {}
     op_id = int(op.get("id") or 0)
-
-    if not op_id or not cp or not cp.get("meta"):
-        await update.message.reply_text("❌ Kontragent yaratishda xatolik. Qayta urinib ko‘ring.")
+    if not op_id:
+        await q.edit_message_text("❌ Operator ID topilmadi. Qayta /login qiling.", reply_markup=None)
         return ConversationHandler.END
 
-    # DB ga OPEN confirm yozamiz
+    cp_id = (q.data or "").split("cfcp:", 1)[-1]
+    cand = (context.user_data.get("cf_new_cp_map") or {}).get(cp_id)
+    if not cand:
+        await q.edit_message_text("❌ Kontragent topilmadi. Qaytadan /tasdiq qiling.", reply_markup=None)
+        return ConversationHandler.END
+
+    # brand/client/phone
+    cp_name = (cand.get("name") or "").strip()
+    brand = (cp_name.split(" ", 1)[0] if cp_name else "N/A").upper()
+    client_name = cp_name
+    phone_plus = (cand.get("phone") or "").strip()
+    cp_meta = cand.get("meta") or {}
+
+    # ✅ DB ga OPEN confirm yozamiz
     cid = create_confirm(
         operator_id=op_id,
         brand=brand,
         client_name=client_name,
         phone_plus=phone_plus,
-        counterparty_meta=cp["meta"],
+        counterparty_meta=cp_meta,
     )
 
-    # Keyin odatdagi flow: rasm so‘raymiz
-    context.user_data["confirm_id"] = int(cid)
+    context.user_data["confirm_id"] = cid
     context.user_data["confirm_data"] = {
         "brand": brand,
         "client_name": client_name,
         "phone_plus": phone_plus,
-        "counterparty_meta": cp["meta"],
+        "counterparty_meta": cp_meta,
         "image_path": "",
         "item_type": "",
         "size": "",
@@ -315,7 +344,71 @@ async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "group_name": "",
     }
 
-    await update.message.reply_text("🖼 Buyurtma rasmini yuboring (foto).")
+    context.user_data.pop("cf_new_cp_map", None)
+
+    await q.edit_message_text("🖼 Buyurtma rasmini yuboring (foto).", reply_markup=None)
+    return CF_PHOTO
+
+
+async def on_new_cp_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    op = context.user_data.get("operator") or {}
+    op_id = int(op.get("id") or 0)
+    if not op_id:
+        await q.edit_message_text("❌ Operator ID topilmadi. Qayta /login qiling.", reply_markup=None)
+        return ConversationHandler.END
+
+    raw = (q.data or "").split("cfcpnew:", 1)[-1].strip()
+    if not raw:
+        await q.edit_message_text("❌ Nomi bo‘sh. Qaytadan urinib ko‘ring.", reply_markup=None)
+        return ConversationHandler.END
+
+    digits = _digits_only(raw)
+    phone_plus = ""
+    if len(digits) >= 7:
+        if digits.startswith("998"):
+            phone_plus = "+" + digits
+        else:
+            phone_plus = "+998" + digits[-9:]
+
+    cp = get_or_create_counterparty(name=raw, phone=(phone_plus or None))
+
+    cp_name = (cp.get("name") or "").strip()
+    brand = (cp_name.split(" ", 1)[0] if cp_name else "N/A").upper()
+    client_name = cp_name
+    phone_plus = (cp.get("phone") or "").strip()
+    cp_meta = cp.get("meta") or {}
+
+    cid = create_confirm(
+        operator_id=op_id,
+        brand=brand,
+        client_name=client_name,
+        phone_plus=phone_plus,
+        counterparty_meta=cp_meta,
+    )
+
+    context.user_data["confirm_id"] = cid
+    context.user_data["confirm_data"] = {
+        "brand": brand,
+        "client_name": client_name,
+        "phone_plus": phone_plus,
+        "counterparty_meta": cp_meta,
+        "image_path": "",
+        "item_type": "",
+        "size": "",
+        "qty": None,
+        "price_uzs": None,
+        "sales_channel_meta": None,
+        "sales_channel_name": "",
+        "group_meta": None,
+        "group_name": "",
+    }
+
+    context.user_data.pop("cf_new_cp_map", None)
+
+    await q.edit_message_text("✅ Kontragent yaratildi.\n🖼 Endi buyurtma rasmini yuboring (foto).", reply_markup=None)
     return CF_PHOTO
 
 
@@ -349,7 +442,7 @@ async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "group_name": "",
     }
 
-    await q.edit_message_text("🖼 Buyurtma rasmini yuboring (foto).")
+    await q.edit_message_text("🖼 Buyurtma rasmini yuboring (foto).", reply_markup=None)
     return CF_PHOTO
 
 
@@ -431,7 +524,7 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sc_id = (q.data or "").split("cfsc:", 1)[-1]
     ch = (context.user_data.get("cf_channels_map") or {}).get(sc_id)
     if not ch:
-        await q.edit_message_text("❌ Kanal topilmadi. Qaytadan /tasdiq qiling.")
+        await q.edit_message_text("❌ Kanal topilmadi. Qaytadan /tasdiq qiling.", reply_markup=None)
         return ConversationHandler.END
 
     d = context.user_data["confirm_data"]
@@ -450,7 +543,7 @@ async def on_group_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gp_id = (q.data or "").split("cfg:", 1)[-1]
     g = (context.user_data.get("cf_groups_map") or {}).get(gp_id)
     if not g:
-        await q.edit_message_text("❌ Группа topilmadi. Qaytadan /tasdiq qiling.")
+        await q.edit_message_text("❌ Группа topilmadi. Qaytadan /tasdiq qiling.", reply_markup=None)
         return ConversationHandler.END
 
     d = context.user_data["confirm_data"]
@@ -458,7 +551,7 @@ async def on_group_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["group_name"] = g.get("name") or ""
     context.user_data["confirm_data"] = d
 
-    await q.edit_message_text("8) 💰 Цены продажа (narx) yozing. Masalan: 450")
+    await q.edit_message_text("8) 💰 Цены продажa (narx) yozing. Masalan: 450", reply_markup=None)
     return CF_PRICE
 
 
@@ -499,6 +592,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action != "send":
         return CF_REVIEW
 
+    # ===== SEND =====
     op = context.user_data["operator"]
     cid = int(context.user_data.get("confirm_id") or 0)
     d = context.user_data["confirm_data"]
@@ -521,15 +615,15 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_path = d.get("image_path") or ""
 
     if not cp_meta:
-        await q.edit_message_text("❌ Kontragent meta yo‘q. /kiritish dan qaytadan boshlang.")
+        await q.edit_message_text("❌ Kontragent meta yo‘q. /tasdiq ni qaytadan boshlang.", reply_markup=None)
         return ConversationHandler.END
 
     if not (item_type and size and isinstance(qty, int) and qty > 0 and isinstance(price_uzs, int) and price_uzs > 0):
-        await q.edit_message_text("❌ Tasdiq ma’lumotlari to‘liq emas (nimaligi/razmer/son/narx).")
+        await q.edit_message_text("❌ Tasdiq ma’lumotlari to‘liq emas (nimaligi/razmer/son/narx).", reply_markup=None)
         return ConversationHandler.END
 
     if not sc_meta or not gp_meta:
-        await q.edit_message_text("❌ Kanal prodaj yoki Группа tanlanmagan.")
+        await q.edit_message_text("❌ Kanal prodaj yoki Группа tanlanmagan.", reply_markup=None)
         return ConversationHandler.END
 
     moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -556,6 +650,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pt_meta:
             pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
 
+        # 1) create product
         prod = create_product(
             name=product_name,
             productfolder_meta=gp_meta,
@@ -565,9 +660,11 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prod_id = str(prod.get("id") or "")
         prod_meta = prod.get("meta")
 
+        # 2) attach image
         if prod_id and image_path and os.path.exists(image_path):
             attach_image_to_product(prod_id, image_path)
 
+        # 3) create order
         positions = []
         if prod_meta:
             positions = [{
@@ -586,12 +683,13 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         order_id = str(order.get("id") or "")
 
+        # 4) attach file
         if order_id and image_path and os.path.exists(image_path):
             attach_file_to_customerorder(order_id, image_path)
 
         mark_confirm_done(int(op["id"]), cid)
 
-        await q.edit_message_text("✅ Sizning buyurtmangiz qabul qilindi.")
+        await q.edit_message_text("✅ Sizning buyurtmangiz qabul qilindi.", reply_markup=None)
 
         if CONFIRM_CHAT_ID:
             caption = (
@@ -621,10 +719,11 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        await q.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")
+        await q.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}", reply_markup=None)
         return ConversationHandler.END
 
-    for k in ("confirm_id", "confirm_data", "cf_channels_map", "cf_groups_map", "edit_key"):
+    # cleanup
+    for k in ("confirm_id", "confirm_data", "cf_channels_map", "cf_groups_map", "cf_new_cp_map", "edit_key"):
         context.user_data.pop(k, None)
 
     return ConversationHandler.END
@@ -656,7 +755,7 @@ async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "channel": "📊 Kanalni qayta tanlash uchun OK yozing:",
         "group": "📁 Группа ni qayta tanlash uchun OK yozing:",
     }
-    await q.edit_message_text(prompts[key])
+    await q.edit_message_text(prompts[key], reply_markup=None)
     return CF_EDIT_VALUE
 
 
