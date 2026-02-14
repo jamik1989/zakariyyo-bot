@@ -57,6 +57,8 @@ from .handlers.order import (
 from .handlers.confirm import (
     tasdiq_start,
     on_pick,
+    on_new_confirm_click,
+    on_new_confirm_cp,
     on_photo,
     on_kind,
     on_size,
@@ -68,6 +70,7 @@ from .handlers.confirm import (
     on_edit_choose,
     on_edit_value,
     CF_PICK,
+    CF_NEW_CP,
     CF_PHOTO,
     CF_KIND,
     CF_SIZE,
@@ -153,7 +156,6 @@ def build_app() -> Application:
     )
     application.add_handler(admin_conv)
 
-
     # ORDER FLOW (/kiritish)
     order_conv = ConversationHandler(
         entry_points=[CommandHandler("kiritish", kiritish_start)],
@@ -183,7 +185,14 @@ def build_app() -> Application:
     confirm_conv = ConversationHandler(
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
-            CF_PICK: [CallbackQueryHandler(on_pick, pattern=r"^cfpick:")],
+            CF_PICK: [
+                CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
+                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
+            ],
+
+            # NEW: kontragent ma'lumotini matn bilan olamiz (BRAND-Mijoz-910...)
+            CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+
             CF_PHOTO: [MessageHandler(filters.PHOTO, on_photo)],
 
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
