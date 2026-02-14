@@ -1,3 +1,4 @@
+# app/db.py
 import sqlite3
 import json
 from pathlib import Path
@@ -57,7 +58,7 @@ def create_operator(phone: str, name: str, password: str) -> bool:
     try:
         cur.execute(
             "INSERT INTO operators (phone, name, password) VALUES (?, ?, ?)",
-            (phone, name, password)
+            ((phone or "").strip(), (name or "").strip(), (password or "").strip())
         )
         conn.commit()
         return True
@@ -72,7 +73,7 @@ def check_operator(phone: str, password: str):
     cur = conn.cursor()
     cur.execute(
         "SELECT id, phone, name FROM operators WHERE phone=? AND password=?",
-        (phone, password)
+        ((phone or "").strip(), (password or "").strip())
     )
     row = cur.fetchone()
     conn.close()
@@ -88,6 +89,10 @@ def create_confirm(
     phone_plus: str,
     counterparty_meta: Dict[str, Any],
 ) -> int:
+    """
+    Oddiy insert: har safar yangi OPEN yozadi.
+    (Variant A uchun pastdagi create_confirm_upsert ishlatiladi.)
+    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -98,12 +103,85 @@ def create_confirm(
         INSERT INTO confirms (operator_id, brand, client_name, phone_plus, counterparty_meta, status)
         VALUES (?, ?, ?, ?, ?, 'OPEN')
         """,
-        (int(operator_id), (brand or "").strip(), (client_name or "").strip(), (phone_plus or "").strip(), meta_json),
+        (
+            int(operator_id),
+            (brand or "").strip(),
+            (client_name or "").strip(),
+            (phone_plus or "").strip(),
+            meta_json,
+        ),
     )
     conn.commit()
     new_id = int(cur.lastrowid)
     conn.close()
     return new_id
+
+
+def create_confirm_upsert(
+    operator_id: int,
+    brand: str,
+    client_name: str,
+    phone_plus: str,
+    counterparty_meta: Dict[str, Any],
+) -> int:
+    """
+    Variant A (takrorni oldini olish):
+    Agar operator_id + brand + phone_plus bo'yicha OPEN mavjud bo'lsa:
+      - yangi yozuv yaratmaydi
+      - mavjud OPEN id ni qaytaradi
+      - client_name / counterparty_meta ni yangilaydi (so'nggi holat bo'lsin)
+
+    Aks holda:
+      - yangi OPEN yaratadi
+    """
+    op_id = int(operator_id or 0)
+    brand_key = (brand or "").strip().upper()
+    phone_key = (phone_plus or "").strip()
+    client_clean = (client_name or "").strip()
+    meta_json = json.dumps(counterparty_meta or {}, ensure_ascii=False)
+
+    if not op_id or not brand_key or not phone_key:
+        # fallback: oddiy create
+        return create_confirm(operator_id, brand, client_name, phone_plus, counterparty_meta)
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # OPEN mavjudmi?
+    cur.execute(
+        """
+        SELECT id
+        FROM confirms
+        WHERE operator_id=?
+          AND status='OPEN'
+          AND upper(trim(brand))=?
+          AND trim(phone_plus)=?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (op_id, brand_key, phone_key),
+    )
+    row = cur.fetchone()
+
+    if row:
+        existing_id = int(row["id"])
+        # Mavjud OPEN ni yangilaymiz
+        cur.execute(
+            """
+            UPDATE confirms
+            SET client_name=?,
+                counterparty_meta=?
+            WHERE operator_id=? AND id=? AND status='OPEN'
+            """,
+            (client_clean, meta_json, op_id, existing_id),
+        )
+        conn.commit()
+        conn.close()
+        return existing_id
+
+    conn.close()
+    # Yo'q bo'lsa: yangi yaratamiz
+    return create_confirm(op_id, brand_key, client_clean, phone_key, counterparty_meta)
 
 
 def list_open_confirms(operator_id: int, limit: int = 20) -> List[Dict[str, Any]]:

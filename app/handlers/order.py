@@ -16,7 +16,7 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import GROUP_CHAT_ID
-from ..db import create_confirm  # ✅ NEW: /tasdiq uchun OPEN yozamiz
+from ..db import create_confirm_upsert  # ✅ NEW: /tasdiq uchun OPEN yozamiz
 from ..services.moysklad import (
     ms_get,
     get_sales_channels,
@@ -702,7 +702,7 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone_plus = (cp.get("phone") or "").strip()
 
         if op_id and cp.get("meta"):
-            create_confirm(
+            create_confirm_upsert(
                 operator_id=op_id,
                 brand=brand or (cp_name.split(" ", 1)[0] if cp_name else "N/A"),
                 client_name=client_name,
