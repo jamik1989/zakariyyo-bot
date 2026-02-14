@@ -214,7 +214,7 @@ def build_app() -> Application:
             ],
 
             CF_PHOTO: [
-                MessageHandler(filters.PHOTO, on_photo)
+                MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo)
             ],
 
             CF_KIND: [

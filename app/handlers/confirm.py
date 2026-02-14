@@ -345,13 +345,21 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     _ensure_confirm_data(context)
 
-    if not msg.photo:
-        await msg.reply_text("❌ Iltimos rasm (foto) yuboring.")
-        return CF_PHOTO
-
-    file = await msg.photo[-1].get_file()
     img_path = TMP_DIR / f"confirm_{msg.message_id}.jpg"
-    await file.download_to_drive(str(img_path))
+
+    # 1) Oddiy foto bo‘lsa
+    if msg.photo:
+        file = await msg.photo[-1].get_file()
+        await file.download_to_drive(str(img_path))
+
+    # 2) “As file / document” yuborilgan rasm bo‘lsa
+    elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+        file = await msg.document.get_file()
+        await file.download_to_drive(str(img_path))
+
+    else:
+        await msg.reply_text("❌ Iltimos rasm yuboring (Photo yoki File sifatida rasm).")
+        return CF_PHOTO
 
     d = context.user_data["confirm_data"]
     d["image_path"] = str(img_path)
