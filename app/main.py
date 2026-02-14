@@ -16,6 +16,8 @@ from .config import BOT_TOKEN
 from .db import init_db
 
 from .handlers.start import start
+
+# ===== AUTH =====
 from .handlers.auth import (
     register_start,
     register_phone,
@@ -113,7 +115,8 @@ def build_app() -> Application:
     # START
     application.add_handler(CommandHandler("start", start))
 
-    # REGISTER
+    # ================= AUTH =================
+
     register_conv = ConversationHandler(
         entry_points=[CommandHandler("register", register_start)],
         states={
@@ -127,7 +130,6 @@ def build_app() -> Application:
     )
     application.add_handler(register_conv)
 
-    # LOGIN
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login", login_start)],
         states={
@@ -140,7 +142,8 @@ def build_app() -> Application:
     )
     application.add_handler(login_conv)
 
-    # ADMIN
+    # ================= ADMIN =================
+
     admin_conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_start)],
         states={
@@ -156,24 +159,37 @@ def build_app() -> Application:
     )
     application.add_handler(admin_conv)
 
-    # ORDER FLOW (/kiritish)
+    # ================= ORDER (/kiritish) =================
+
     order_conv = ConversationHandler(
         entry_points=[CommandHandler("kiritish", kiritish_start)],
         states={
             STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
 
-            STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
+            STEP_CP_SEARCH: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)
+            ],
+
             STEP_CP_PICK: [
                 CallbackQueryHandler(on_cp_pick, pattern=r"^cp:"),
                 CallbackQueryHandler(on_cp_create_new, pattern=r"^cpnew:"),
             ],
 
-            STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
-            STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
+            STEP_AMOUNT_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)
+            ],
 
-            STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
+            STEP_CHECK: [
+                MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)
+            ],
 
-            STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
+            STEP_CHANNEL: [
+                CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")
+            ],
+
+            STEP_REVIEW: [
+                CallbackQueryHandler(on_review_action, pattern=r"^rv:")
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
         allow_reentry=True,
@@ -181,31 +197,61 @@ def build_app() -> Application:
     )
     application.add_handler(order_conv)
 
-    # CONFIRM FLOW (/tasdiq)
+    # ================= CONFIRM (/tasdiq) =================
+
     confirm_conv = ConversationHandler(
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
+
+            # MUHIM: cfnew birinchi turishi kerak
             CF_PICK: [
-                CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
                 CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
+                CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
-            CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
 
-            CF_PHOTO: [MessageHandler(filters.PHOTO, on_photo)],
+            CF_NEW_CP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)
+            ],
 
-            CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
-            CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
-            CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
+            CF_PHOTO: [
+                MessageHandler(filters.PHOTO, on_photo)
+            ],
 
-            CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
+            CF_KIND: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)
+            ],
 
-            CF_GROUP: [CallbackQueryHandler(on_group_pick, pattern=r"^cfg:")],
+            CF_SIZE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)
+            ],
 
-            CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
+            CF_QTY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)
+            ],
 
-            CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
-            CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
-            CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
+            CF_CHANNEL: [
+                CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")
+            ],
+
+            CF_GROUP: [
+                CallbackQueryHandler(on_group_pick, pattern=r"^cfg:")
+            ],
+
+            CF_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)
+            ],
+
+            CF_REVIEW: [
+                CallbackQueryHandler(on_review, pattern=r"^cfr:")
+            ],
+
+            CF_EDIT_CHOOSE: [
+                CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")
+            ],
+
+            CF_EDIT_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel_confirm)],
         allow_reentry=True,
@@ -218,7 +264,7 @@ def build_app() -> Application:
 
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN topilmadi. Railway Variables yoki .env ga BOT_TOKEN kiriting.")
+        raise RuntimeError("BOT_TOKEN topilmadi. Railway yoki .env ga kiriting.")
 
     logger.info("🚀 Bot ishga tushmoqda...")
     init_db()
