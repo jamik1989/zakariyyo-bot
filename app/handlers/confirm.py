@@ -26,6 +26,7 @@ from ..services.moysklad import (
     attach_image_to_product,
     create_customerorder,
     attach_file_to_customerorder,
+    attach_image_to_customerorder,   # ✅ NEW
     get_or_create_counterparty,
 )
 
@@ -37,7 +38,6 @@ TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 TZ = ZoneInfo("Asia/Tashkent")
-
 GROUPS_PAGE_SIZE = 10
 
 
@@ -95,7 +95,6 @@ def _normalize_phone_uz(phone_raw: str) -> str:
 
 
 def _parse_brand_client_phone(text: str):
-    # format: BRAND-ClientName-910175253
     parts = [p.strip() for p in (text or "").strip().split("-", maxsplit=2)]
     if len(parts) != 3:
         return None
@@ -114,10 +113,6 @@ def _fmt_int(n: Optional[int]) -> str:
 
 
 def _item_abbr3(item_type: str) -> str:
-    """
-    'Karton birka' -> 'kar'
-    birinchi 3 harf: harflarni olib, lower, boshidan 3 ta.
-    """
     raw = (item_type or "").strip().lower()
     letters = re.sub(r"[^a-zа-яёўқғҳ]", "", raw, flags=re.IGNORECASE)
     if len(letters) >= 3:
@@ -134,10 +129,10 @@ def _ensure_confirm_data(context: ContextTypes.DEFAULT_TYPE):
     d.setdefault("counterparty_meta", {})
     d.setdefault("image_path", "")
 
-    d.setdefault("item_type", "")         # Maxsulot turi
+    d.setdefault("item_type", "")
     d.setdefault("size", "")
-    d.setdefault("bg_color", "")          # NEW
-    d.setdefault("text_color", "")        # NEW
+    d.setdefault("bg_color", "")
+    d.setdefault("text_color", "")
     d.setdefault("qty", None)
     d.setdefault("price_uzs", None)
 
@@ -187,7 +182,7 @@ async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     channels = channels[:20]
-    context.user_data["cf_channels_map"] = {c["id"]: c for c in channels}
+    context.user_data["cf_channels_map"] = {str(c["id"]): c for c in channels}
 
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"cfsc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(kb)
@@ -210,17 +205,19 @@ def _build_groups_page_markup(groups: List[Dict[str, Any]], page: int) -> Inline
     start = page * GROUPS_PAGE_SIZE
     chunk = groups[start:start + GROUPS_PAGE_SIZE]
 
-    kb = []
+    kb: List[List[InlineKeyboardButton]] = []
     for g in chunk:
         kb.append([InlineKeyboardButton(g["name"], callback_data=f"cfg:{g['id']}")])
 
-    nav = []
+    nav: List[InlineKeyboardButton] = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"cfgp:{page-1}"))
     nav.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="cfgp:noop"))
     if page < max_page:
         nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"cfgp:{page+1}"))
-    kb.append(nav)
+
+    if nav:
+        kb.append(nav)
 
     return InlineKeyboardMarkup(kb)
 
@@ -452,7 +449,6 @@ async def on_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["size"] = s
     context.user_data["confirm_data"] = d
 
-    # NEW
     await update.message.reply_text("5) ⬜ Foni: Masalan: Oq")
     return CF_BG
 
@@ -512,7 +508,7 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
 
     sc_id = (q.data or "").split("cfsc:", 1)[-1]
-    ch = (context.user_data.get("cf_channels_map") or {}).get(sc_id)
+    ch = (context.user_data.get("cf_channels_map") or {}).get(str(sc_id))
     if not ch:
         await q.edit_message_text("❌ Kanal topilmadi. Qaytadan /tasdiq qiling.")
         return ConversationHandler.END
@@ -628,7 +624,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-    # ✅ Наименование товара: BRAND + first3(item_type) + size
     abbr = _item_abbr3(item_type)
     product_name = f"{brand} {abbr} {size}".strip()
 
@@ -673,6 +668,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "price": int(price_uzs) * 100,
             }]
 
+        # ✅ VAT OFF: moysklad.create_customerorder ichida default vatEnabled/vatIncluded False
         order = create_customerorder(
             organization_meta=org["meta"],
             agent_meta=cp_meta,
@@ -684,6 +680,10 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = str(order.get("id") or "")
 
         if order_id:
+            # ✅ Buyurtma kartochkasi "Изображение" bo'limiga
+            attach_image_to_customerorder(order_id, image_path)
+
+            # (ixtiyoriy) Files bo'limiga ham tashlab qo'yamiz (zarar qilmaydi)
             attach_file_to_customerorder(order_id, image_path)
 
         mark_confirm_done(int(op["id"]), cid)
@@ -699,7 +699,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_menu_keyboard(),
         )
 
-        # ✅ Telegram kanalga yuborish: siz aytgan format
         if CONFIRM_CHAT_ID:
             caption = (
                 f"🏷 Brend: {brand}\n"
