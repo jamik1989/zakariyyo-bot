@@ -64,10 +64,12 @@ from .handlers.confirm import (
     on_photo,
     on_kind,
     on_size,
+    on_bg,          # ✅ NEW
+    on_text,        # ✅ NEW
     on_qty,
     on_channel_pick,
+    on_groups_page, # ✅ paging
     on_group_pick,
-    on_groups_page,   # ✅ MUHIM (paging uchun)
     on_price,
     on_review,
     on_edit_choose,
@@ -77,6 +79,8 @@ from .handlers.confirm import (
     CF_PHOTO,
     CF_KIND,
     CF_SIZE,
+    CF_BG,          # ✅ NEW
+    CF_TEXT,        # ✅ NEW
     CF_QTY,
     CF_CHANNEL,
     CF_GROUP,
@@ -166,31 +170,15 @@ def build_app() -> Application:
         entry_points=[CommandHandler("kiritish", kiritish_start)],
         states={
             STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
-
-            STEP_CP_SEARCH: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)
-            ],
-
+            STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
             STEP_CP_PICK: [
                 CallbackQueryHandler(on_cp_pick, pattern=r"^cp:"),
                 CallbackQueryHandler(on_cp_create_new, pattern=r"^cpnew:"),
             ],
-
-            STEP_AMOUNT_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)
-            ],
-
-            STEP_CHECK: [
-                MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)
-            ],
-
-            STEP_CHANNEL: [
-                CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")
-            ],
-
-            STEP_REVIEW: [
-                CallbackQueryHandler(on_review_action, pattern=r"^rv:")
-            ],
+            STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
+            STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
+            STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
+            STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
         },
         fallbacks=[CommandHandler("cancel", cancel_order)],
         allow_reentry=True,
@@ -203,57 +191,37 @@ def build_app() -> Application:
     confirm_conv = ConversationHandler(
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
-
             CF_PICK: [
                 CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
+            CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
 
-            CF_NEW_CP: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)
-            ],
+            # Document.ALL: confirm.py ichida image mime tekshiriladi
+            CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
 
-            CF_PHOTO: [
-                MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)
-            ],
+            CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
+            CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
 
-            CF_KIND: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)
-            ],
+            # ✅ NEW 2 steps
+            CF_BG: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_bg)],
+            CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
 
-            CF_SIZE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)
-            ],
+            CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
 
-            CF_QTY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)
-            ],
+            CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
 
-            CF_CHANNEL: [
-                CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")
-            ],
-
-            # ✅ MUHIM TUZATISH — paging qo‘shildi
+            # ✅ paging + pick
             CF_GROUP: [
-                CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
+                CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
             ],
 
-            CF_PRICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)
-            ],
+            CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
 
-            CF_REVIEW: [
-                CallbackQueryHandler(on_review, pattern=r"^cfr:")
-            ],
-
-            CF_EDIT_CHOOSE: [
-                CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")
-            ],
-
-            CF_EDIT_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)
-            ],
+            CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
+            CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
+            CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel_confirm)],
         allow_reentry=True,
