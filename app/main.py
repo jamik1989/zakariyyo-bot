@@ -59,6 +59,7 @@ from .handlers.order import (
 from .handlers.confirm import (
     tasdiq_start,
     on_pick,
+    on_pick_search_text,   # ✅ NEW (qidirish)
     on_new_confirm_click,
     on_new_confirm_cp,
     on_photo,
@@ -66,7 +67,7 @@ from .handlers.confirm import (
     on_size,
     on_bg,
     on_text,
-    on_qm,           # ✅ NEW
+    on_qm,
     on_qty,
     on_channel_pick,
     on_groups_page,
@@ -82,7 +83,7 @@ from .handlers.confirm import (
     CF_SIZE,
     CF_BG,
     CF_TEXT,
-    CF_QM,           # ✅ NEW
+    CF_QM,
     CF_QTY,
     CF_CHANNEL,
     CF_GROUP,
@@ -122,8 +123,6 @@ async def on_error(update, context):
 
 def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
-
-    # Global error handler
     application.add_error_handler(on_error)
 
     # START
@@ -201,32 +200,27 @@ def build_app() -> Application:
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
             CF_PICK: [
+                # ✅ qidirish (text)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, on_pick_search_text),
+
+                # tugmalar
                 CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
             CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
-
-            # Photo yoki Document (image/*) - tekshiruv confirm.py ichida
             CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
-
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
             CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
             CF_BG: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_bg)],
             CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
-
-            CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],  # ✅ NEW
-
+            CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
-
             CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
-
             CF_GROUP: [
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
                 CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
             ],
-
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
-
             CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
             CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
             CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],

@@ -82,11 +82,22 @@ def _edit_choose_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📏 R (Razmer)", callback_data="cfe:size")],
         [InlineKeyboardButton("🎨 F (Foni)", callback_data="cfe:bg")],
         [InlineKeyboardButton("🔤 TI (Text rangi)", callback_data="cfe:text")],
-        [InlineKeyboardButton("📝 Q.M", callback_data="cfe:qm")],
+        [InlineKeyboardButton("📝 Q.M", callback_data="cfe:qm")],   # ✅ NEW
         [InlineKeyboardButton("🔢 S (Soni)", callback_data="cfe:qty")],
         [InlineKeyboardButton("📊 KL (Kanal)", callback_data="cfe:channel")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="cfe:back")],
     ])
+
+
+def _pick_intro_text() -> str:
+    return (
+        "✅ Yangi tasdiq yaratish yoki qidirish\n\n"
+        "✅ Yangi yaratish formati:\n"
+        "BRAND-MijozNomi-910175253\n"
+        "Masalan: LEAP-Akmal-910175253\n\n"
+        "🔎 Qidirish uchun brend/mijoz/telefon yozing:\n"
+        "Masalan: LEAP yoki Akmal yoki 910175253"
+    )
 
 
 # ============ helpers ============
@@ -185,22 +196,38 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     )
 
 
-def _match_confirm_row(r: Dict[str, Any], qlow: str) -> bool:
-    if not qlow:
+def _match_confirm_row(row: Dict[str, Any], q: str, q_digits: str) -> bool:
+    q_low = (q or "").strip().lower()
+    if not q_low:
         return False
-    b = str(r.get("brand") or "").lower()
-    c = str(r.get("client_name") or "").lower()
-    p = str(r.get("phone_plus") or "").lower()
-    return (qlow in b) or (qlow in c) or (qlow in p)
+
+    brand = (row.get("brand") or "").lower()
+    client = (row.get("client_name") or "").lower()
+    phone_plus = (row.get("phone_plus") or "")
+    phone_digits = _digits_only(phone_plus)
+
+    # text match
+    if q_low in brand or q_low in client:
+        return True
+
+    # phone match (digits)
+    if q_digits and q_digits in phone_digits:
+        return True
+
+    return False
 
 
-def _search_results_kb(rows: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
-    kb: List[List[InlineKeyboardButton]] = []
-    kb.append([InlineKeyboardButton("➕ Yangi tasdiq yaratish", callback_data="cfnew")])
-    for r in rows[:30]:
+async def _show_pick_list(update: Update, context: ContextTypes.DEFAULT_TYPE, rows: List[Dict[str, Any]], header: str = ""):
+    kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton("➕ Yangi tasdiq yaratish", callback_data="cfnew")]]
+
+    for r in rows[:50]:
         title = f"{r.get('brand','')} | {r.get('client_name','')} | {r.get('phone_plus','')}".strip()
-        kb.append([InlineKeyboardButton(title[:64], callback_data=f"cfpick:{r['id']}")])
-    return InlineKeyboardMarkup(kb)
+        kb.append([InlineKeyboardButton(title, callback_data=f"cfpick:{r['id']}")])
+
+    text = header.strip() + ("\n\n" if header else "")
+    text += _pick_intro_text()
+
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 
 # ============ SALES CHANNEL ============
@@ -317,18 +344,51 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Operator ID topilmadi. Qayta /login qiling.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
-    rows = list_open_confirms(op_id, limit=50)
+    rows = list_open_confirms(op_id, limit=200)
 
+    # CF_PICK bosqichida endi TEXT ham qabul qilamiz (qidirish)
     kb = [[InlineKeyboardButton("➕ Yangi tasdiq yaratish", callback_data="cfnew")]]
-    if rows:
-        for r in rows:
-            title = f"{r.get('brand','')} | {r.get('phone_plus','')}".strip()
-            kb.append([InlineKeyboardButton(title, callback_data=f"cfpick:{r['id']}")])
+    for r in (rows or [])[:30]:
+        title = f"{r.get('brand','')} | {r.get('client_name','')} | {r.get('phone_plus','')}".strip()
+        kb.append([InlineKeyboardButton(title, callback_data=f"cfpick:{r['id']}")])
 
-    await update.message.reply_text(
-        "✅ Tasdiqlash: qaysi buyurtmani yuboramiz?",
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
+    await update.message.reply_text(_pick_intro_text(), reply_markup=InlineKeyboardMarkup(kb))
+    return CF_PICK
+
+
+async def on_pick_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ✅ CF_PICK ichida qidirish (huddi /kiritish dagidek):
+    brend / mijoz / telefon bo'yicha filter qilib tugmalar chiqaradi.
+    """
+    if not context.user_data.get("operator"):
+        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
+        return ConversationHandler.END
+
+    op = context.user_data["operator"]
+    op_id = int(op.get("id") or 0)
+    q = (update.message.text or "").strip()
+
+    # agar user shu joyda ham BRAND-Mijoz-910... yuborsa, uni NEW ga o'tkazamiz
+    triple = _parse_brand_client_phone(q)
+    if triple:
+        # foydalanuvchi format yubordi — create bosqichiga o‘tkazamiz
+        await update.message.reply_text(
+            "✅ Format qabul qilindi. Endi tasdiq yaratamiz..."
+        )
+        # fake: on_new_confirm_cp logikasini chaqiramiz
+        return await on_new_confirm_cp(update, context)
+
+    rows = list_open_confirms(op_id, limit=500) or []
+    q_digits = _digits_only(q)
+
+    found = [r for r in rows if _match_confirm_row(r, q, q_digits)]
+
+    if not found:
+        await _show_pick_list(update, context, rows[:30], header="❌ Topilmadi.")
+        return CF_PICK
+
+    await _show_pick_list(update, context, found, header=f"✅ Topildi: {len(found)} ta")
     return CF_PICK
 
 
@@ -336,12 +396,9 @@ async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYP
     q = update.callback_query
     await q.answer()
     await q.edit_message_text(
-        "🆕 Yangi tasdiq yaratish yoki qidirish\n\n"
-        "✅ Yangi yaratish formati:\n"
-        "BRAND-MijozNomi-910175253\n"
-        "Masalan: LEAP-Akmal-910175253\n\n"
-        "🔎 Qidirish uchun brend/mijoz/telefon yozing:\n"
-        "Masalan: LEAP yoki Akmal yoki 910175253"
+        "🆕 Yangi tasdiq yaratish\n\n"
+        "Format: BRAND-MijozNomi-910175253\n"
+        "Masalan: LEAP-Akmal-910175253"
     )
     return CF_NEW_CP
 
@@ -351,36 +408,15 @@ async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
-    text_in = (update.message.text or "").strip()
-
-    # 1) Avval eski formatni tekshiramiz
-    triple = _parse_brand_client_phone(text_in)
-
+    triple = _parse_brand_client_phone(update.message.text or "")
     if not triple:
-        # 2) Format bo'lmasa — qidiruv rejimi
-        op = context.user_data["operator"]
-        op_id = int(op.get("id") or 0)
-        qlow = text_in.lower()
-
-        rows = list_open_confirms(op_id, limit=200) or []
-        found = [r for r in rows if _match_confirm_row(r, qlow)]
-
-        if not found:
-            await update.message.reply_text(
-                "❌ Topilmadi.\n\n"
-                "🔎 Qidirish: brend/mijoz/telefon yozing (LEAP / Akmal / 910175253)\n"
-                "✅ Yangi yaratish: BRAND-MijozNomi-910175253\n"
-                "Masalan: LEAP-Akmal-910175253"
-            )
-            return CF_NEW_CP
-
         await update.message.reply_text(
-            f"🔎 Topildi: {len(found)} ta.\nTanlang:",
-            reply_markup=_search_results_kb(found),
+            "❌ Format noto‘g‘ri.\n"
+            "To‘g‘ri format: BRAND-MijozNomi-910175253\n"
+            "Masalan: LEAP-Akmal-910175253"
         )
-        return CF_PICK
+        return CF_NEW_CP
 
-    # ======== eski oqim (format to'g'ri) =========
     brand, client_name, phone_plus = triple
 
     cp_name = f"{brand} {client_name}".strip()
@@ -411,7 +447,7 @@ async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "size": "",
         "bg_color": "",
         "text_color": "",
-        "qm_note": "",
+        "qm_note": "",          # ✅ NEW
         "qty": None,
         "price_uzs": None,
         "sales_channel_meta": None,
@@ -448,7 +484,7 @@ async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "size": "",
         "bg_color": "",
         "text_color": "",
-        "qm_note": "",
+        "qm_note": "",          # ✅ NEW
         "qty": None,
         "price_uzs": None,
         "sales_channel_meta": None,
@@ -489,7 +525,7 @@ async def on_kind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
     text = (update.message.text or "").strip()
     if not text:
-        await update.message.reply_text("❌ M.T bo‘sh bo‘lmasin.")
+        await update.message.reply_text("❌ Maxsulot turi bo‘sh bo‘lmasin.")
         return CF_KIND
 
     d = context.user_data["confirm_data"]
@@ -520,7 +556,7 @@ async def on_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
     val = (update.message.text or "").strip()
     if not val:
-        await update.message.reply_text("❌ F bo‘sh bo‘lmasin. Masalan: Oq")
+        await update.message.reply_text("❌ Foni bo‘sh bo‘lmasin. Masalan: Oq")
         return CF_BG
 
     d = context.user_data["confirm_data"]
@@ -535,7 +571,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
     val = (update.message.text or "").strip()
     if not val:
-        await update.message.reply_text("❌ TI bo‘sh bo‘lmasin. Masalan: Qora")
+        await update.message.reply_text("❌ Text rangi bo‘sh bo‘lmasin. Masalan: Qizil")
         return CF_TEXT
 
     d = context.user_data["confirm_data"]
@@ -562,12 +598,12 @@ async def on_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
     ddd = _digits_only(update.message.text or "")
     if not ddd:
-        await update.message.reply_text("❌ S noto‘g‘ri. Masalan: 3000")
+        await update.message.reply_text("❌ Soni noto‘g‘ri. Masalan: 3000")
         return CF_QTY
 
     qty = int(ddd)
     if qty <= 0 or qty > 10_000_000:
-        await update.message.reply_text("❌ S juda katta/kichik. Masalan: 3000")
+        await update.message.reply_text("❌ Soni juda katta/kichik. Masalan: 3000")
         return CF_QTY
 
     d = context.user_data["confirm_data"]
@@ -745,7 +781,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "price": int(price_uzs) * 100,
             }]
 
-        # VAT OFF sizda create_customerorder ichida ishlayapti (tegmaymiz)
         order = create_customerorder(
             organization_meta=org["meta"],
             agent_meta=cp_meta,
