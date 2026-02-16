@@ -27,22 +27,17 @@ from ..services.moysklad import (
     create_customerorder,
     attach_file_to_customerorder,
     get_or_create_counterparty,
+    search_counterparties,  # ✅ sizdagi tayyor funksiya
 )
 
-# 🔎 Counterparty search (kiritish dagidek bo‘lishi uchun)
-# Agar sizda boshqa nom bilan bo‘lsa — shu importni moslab qo‘ying.
-try:
-    from ..services.moysklad import search_counterparties  # type: ignore
-except Exception:
-    search_counterparties = None  # noqa
-
 # ===== States (main.py bilan MOS) =====
-# PICK, NEW_CP, CP_SEARCH, CP_PICK, PHOTO, KIND, SIZE, BG, TEXT, QM, QTY, CHANNEL, GROUP, PRICE, REVIEW, EDIT_CHOOSE, EDIT_VALUE
+# PICK, NEW_CLICK, CP_SEARCH, CP_PICK, BRAND_ONLY, PHOTO, KIND, SIZE, BG, TEXT, QM, QTY, CHANNEL, GROUP, PRICE, REVIEW, EDIT_CHOOSE, EDIT_VALUE
 (
     CF_PICK,
-    CF_NEW_CP,         # eski format (qoladi)
-    CF_CP_SEARCH,      # ✅ NEW (kiritish dagidek qidiruv)
-    CF_CP_PICK,        # ✅ NEW (qidiruv natijasidan tanlash)
+    CF_NEW_CLICK,
+    CF_CP_SEARCH,
+    CF_CP_PICK,
+    CF_BRAND_ONLY,
     CF_PHOTO,
     CF_KIND,
     CF_SIZE,
@@ -56,7 +51,7 @@ except Exception:
     CF_REVIEW,
     CF_EDIT_CHOOSE,
     CF_EDIT_VALUE,
-) = range(17)
+) = range(18)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,19 +112,6 @@ def _normalize_phone_uz(phone_raw: str) -> str:
     if 9 < len(digits) < 12:
         return "+998" + digits[-9:]
     return "+" + digits
-
-
-def _parse_brand_client_phone(text: str):
-    # format: BRAND-ClientName-910175253
-    parts = [p.strip() for p in (text or "").strip().split("-", maxsplit=2)]
-    if len(parts) != 3:
-        return None
-    brand = parts[0].strip().upper()
-    client = parts[1].strip()
-    phone_plus = _normalize_phone_uz(parts[2])
-    if not brand or not client or not phone_plus:
-        return None
-    return brand, client, phone_plus
 
 
 def _fmt_int(n: Optional[int]) -> str:
@@ -295,7 +277,7 @@ async def on_groups_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_GROUP
 
 
-# ================== TASDIQ START (menu) ==================
+# ================== FLOW ==================
 
 async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
@@ -310,60 +292,48 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rows = list_open_confirms(op_id, limit=50)
 
-    kb = [[InlineKeyboardButton("➕ Yangi tasdiq (qidiruv bilan)", callback_data="cfnew_search")]]
-    kb.append([InlineKeyboardButton("➕ Yangi tasdiq (format bilan)", callback_data="cfnew_format")])
-
+    kb = [
+        [InlineKeyboardButton("🔎 Qidirib yangi tasdiq yaratish", callback_data="cfnew:search")],
+        [InlineKeyboardButton("➕ Format bilan yaratish", callback_data="cfnew:format")],
+    ]
     if rows:
         for r in rows:
             title = f"{r.get('brand','')} | {r.get('phone_plus','')}".strip()
             kb.append([InlineKeyboardButton(title, callback_data=f"cfpick:{r['id']}")])
 
     await update.message.reply_text(
-        "✅ Tasdiqlash: mavjud tasdiqlar yoki yangi yaratish",
+        "✅ Tasdiqlash: qaysi buyurtmani yuboramiz?",
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return CF_PICK
 
 
 async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    CF_PICK dagi 2 ta tugma:
-    - cfnew_search  -> kiritish dagidek qidiruv
-    - cfnew_format  -> eski BRAND-Mijoz-telefon
-    """
     q = update.callback_query
     await q.answer()
 
-    if (q.data or "") == "cfnew_search":
+    mode = (q.data or "").split("cfnew:", 1)[-1]
+
+    if mode == "search":
         await q.edit_message_text(
-            "🔎 Kontragent qidirish (huddi /kiritish dagidek)\n\n"
-            "Brand / ism / telefon yozing.\n"
+            "🔎 Qidirish: brend/mijoz/telefon yozing (LEAP / Akmal / 910175253)\n"
             "Masalan: LEAP yoki Akmal yoki 910175253"
         )
         return CF_CP_SEARCH
 
-    # eski format
+    # mode == "format"
     await q.edit_message_text(
-        "🆕 Yangi tasdiq (eski format)\n\n"
+        "🆕 Yangi tasdiq yaratish (format)\n\n"
         "Format: BRAND-MijozNomi-910175253\n"
         "Masalan: LEAP-Akmal-910175253"
     )
-    return CF_NEW_CP
+    return CF_NEW_CLICK  # keyingi message da on_new_confirm_cp ishlaydi
 
-
-# ================== NEW FLOW: CP SEARCH ==================
 
 async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    ✅ /kiritish dagidek:
-    foydalanuvchi text yozadi -> MoySklad kontragentlarni qidiramiz -> tugmalar chiqaramiz
-    """
-    if search_counterparties is None:
-        await update.message.reply_text(
-            "❌ Qidiruv funksiyasi topilmadi.\n"
-            "services/moysklad.py ichida `search_counterparties(query, limit=...)` bo‘lishi kerak."
-        )
-        return CF_CP_SEARCH
+    if not context.user_data.get("operator"):
+        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
+        return ConversationHandler.END
 
     qtxt = (update.message.text or "").strip()
     if not qtxt:
@@ -371,59 +341,63 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CF_CP_SEARCH
 
     try:
-        items = search_counterparties(qtxt, limit=30) or []
+        rows = search_counterparties(qtxt, limit=20) or []
     except Exception as e:
         await update.message.reply_text(f"❌ Qidiruvda xatolik: {e}")
         return CF_CP_SEARCH
 
-    if not items:
+    if not rows:
         await update.message.reply_text("❌ Topilmadi. Boshqa so‘z bilan urinib ko‘ring.")
         return CF_CP_SEARCH
 
-    # map saqlab qo‘yamiz
-    mp = {}
-    kb = []
-    for it in items:
-        cid = str(it.get("id") or "")
-        name = it.get("name") or "N/A"
-        phone = it.get("phone") or it.get("phone_plus") or ""
+    mp: Dict[str, Dict[str, Any]] = {}
+    kb: List[List[InlineKeyboardButton]] = []
+
+    for r in rows:
+        cid = str(r.get("id") or "")
+        if not cid:
+            continue
+        name = (r.get("name") or "").strip() or "N/A"
+        phone = (r.get("phone") or "").strip()
         title = f"{name} ({phone})" if phone else name
-        mp[cid] = it
+        mp[cid] = r
         kb.append([InlineKeyboardButton(title, callback_data=f"cfcp:{cid}")])
 
-    context.user_data["cf_cp_map"] = mp
+    kb.append([InlineKeyboardButton("➕ Yangi kontragent yaratish", callback_data="cfcp:new")])
 
+    context.user_data["cf_cp_map"] = mp
     await update.message.reply_text(
-        f"✅ Topilgan kontragentlar: {len(items)} ta\nTanlang:",
+        "Topilgan kontragentlar:\nTanlang:",
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return CF_CP_PICK
 
 
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    kontragent tanlandi -> confirm yaratamiz (brand keyin so‘raymiz)
-    """
     q = update.callback_query
     await q.answer()
 
+    data = q.data or ""
+    if data == "cfcp:new":
+        await q.edit_message_text(
+            "✅ Yangi yaratish formati:\n"
+            "BRAND-MijozNomi-910175253\n"
+            "Masalan: LEAP-Akmal-910175253"
+        )
+        return CF_NEW_CLICK
+
+    cid = data.split("cfcp:", 1)[-1]
     mp = context.user_data.get("cf_cp_map") or {}
-    cid = (q.data or "").split("cfcp:", 1)[-1]
     cp = mp.get(cid)
     if not cp:
-        await q.edit_message_text("❌ Kontragent topilmadi. Qaytadan qidiring.")
+        await q.edit_message_text("❌ Topilmadi. Qaytadan qidiring.")
         return CF_CP_SEARCH
 
-    # operator tekshiruv
-    if not context.user_data.get("operator"):
-        await q.edit_message_text("❌ Avval /login qiling.")
-        return ConversationHandler.END
-
-    # confirm_data ga joylaymiz
+    # cp tanlandi -> endi brendni so‘raymiz, qolgan flow o‘sha
     context.user_data["confirm_data"] = {
         "brand": "",
-        "client_name": cp.get("name") or "",
-        "phone_plus": _normalize_phone_uz(cp.get("phone") or cp.get("phone_plus") or ""),
+        "client_name": (cp.get("name") or "").strip(),
+        "phone_plus": _normalize_phone_uz(cp.get("phone") or ""),
         "counterparty_meta": cp.get("meta") or {},
         "image_path": "",
         "item_type": "",
@@ -438,41 +412,44 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "group_meta": None,
         "group_name": "",
     }
-
-    await q.edit_message_text(
-        "🏷 Endi brend nomini yozing (masalan: LEAP / GG / MOON):"
-    )
-    # brendni CF_NEW_CP state orqali olamiz (format emas, faqat brand)
     context.user_data["cf_brand_only"] = True
-    return CF_NEW_CP
 
+    await q.edit_message_text("🏷 Brend nomini yozing. Masalan: LEAP")
+    return CF_BRAND_ONLY
 
-# ================== OLD/NEW CP INPUT ==================
 
 async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    1) Eski format: BRAND-Mijoz-910...
-    2) Yangi qidiruvdan keyin: faqat BRAND (cf_brand_only=True)
+    2 holat:
+    1) Format bilan yaratish (BRAND-Mijoz-telefon)
+    2) Qidiruvdan keyin faqat brend kiritish (cf_brand_only=True)
     """
     if not context.user_data.get("operator"):
         await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
-    # ✅ brand-only mode
+    op = context.user_data["operator"]
+    op_id = int(op.get("id") or 0)
+    if not op_id:
+        await update.message.reply_text("❌ Operator ID topilmadi.")
+        return ConversationHandler.END
+
+    # ✅ QIDIRUVDAN KEYIN: faqat BRAND
     if context.user_data.get("cf_brand_only"):
         brand = (update.message.text or "").strip().upper()
         if not brand:
             await update.message.reply_text("❌ Brend bo‘sh bo‘lmasin.")
-            return CF_NEW_CP
+            return CF_BRAND_ONLY
 
         _ensure_confirm_data(context)
         d = context.user_data["confirm_data"]
         d["brand"] = brand
         context.user_data["confirm_data"] = d
 
-        # DB confirm row yaratamiz (counterparty meta bor)
-        op = context.user_data["operator"]
-        op_id = int(op.get("id") or 0)
+        if not d.get("counterparty_meta"):
+            await update.message.reply_text("❌ Kontragent meta yo‘q. Qaytadan /tasdiq qiling.")
+            return ConversationHandler.END
+
         cid = create_confirm(
             operator_id=op_id,
             brand=d.get("brand") or "",
@@ -480,15 +457,15 @@ async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             phone_plus=d.get("phone_plus") or "",
             counterparty_meta=d.get("counterparty_meta") or {},
         )
-        context.user_data["confirm_id"] = int(cid)
 
+        context.user_data["confirm_id"] = int(cid)
         context.user_data.pop("cf_brand_only", None)
         context.user_data.pop("cf_cp_map", None)
 
         await update.message.reply_text("🖼 Buyurtma rasmini yuboring (Photo yoki File).")
         return CF_PHOTO
 
-    # ✅ eski format mode
+    # ✅ FORMAT BILAN YARATISH
     triple = _parse_brand_client_phone(update.message.text or "")
     if not triple:
         await update.message.reply_text(
@@ -496,17 +473,14 @@ async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "To‘g‘ri format: BRAND-MijozNomi-910175253\n"
             "Masalan: LEAP-Akmal-910175253"
         )
-        return CF_NEW_CP
+        return CF_NEW_CLICK
 
     brand, client_name, phone_plus = triple
-
     cp_name = f"{brand} {client_name}".strip()
     cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
 
-    op = context.user_data["operator"]
-    op_id = int(op.get("id") or 0)
-    if not op_id or not cp or not cp.get("meta"):
-        await update.message.reply_text("❌ Kontragent yaratishda xatolik. Qayta urinib ko‘ring.")
+    if not cp or not cp.get("meta"):
+        await update.message.reply_text("❌ Kontragent yaratishda xatolik.")
         return ConversationHandler.END
 
     cid = create_confirm(
@@ -540,8 +514,6 @@ async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🖼 Buyurtma rasmini yuboring (Photo yoki File).")
     return CF_PHOTO
 
-
-# ================== PICK EXISTING CONFIRM ==================
 
 async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -580,7 +552,7 @@ async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_PHOTO
 
 
-# ================== REST OF FLOW (sizniki o‘sha-o‘sha) ==================
+# ======== qolgani sizniki o‘sha-o‘sha (photo -> kind -> size -> bg -> text -> qm -> qty -> channel -> group -> price -> review) ========
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -670,7 +642,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_qm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
     val = (update.message.text or "").strip()
-
     d = context.user_data["confirm_data"]
     d["qm_note"] = val
     context.user_data["confirm_data"] = d
@@ -962,35 +933,42 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ B bo‘sh bo‘lmasin.")
             return CF_EDIT_VALUE
         d["brand"] = val.strip().upper()
+
     elif key == "item":
         if not val:
             await update.message.reply_text("❌ M.T bo‘sh bo‘lmasin.")
             return CF_EDIT_VALUE
         d["item_type"] = val.strip()
+
     elif key == "size":
         s = val.lower().replace("х", "x").replace("*", "x").replace(" ", "")
         if "x" not in s:
             await update.message.reply_text("❌ Razmer noto‘g‘ri. Masalan: 10x5")
             return CF_EDIT_VALUE
         d["size"] = s
+
     elif key == "bg":
         if not val:
             await update.message.reply_text("❌ F bo‘sh bo‘lmasin.")
             return CF_EDIT_VALUE
         d["bg_color"] = val.strip()
+
     elif key == "text":
         if not val:
             await update.message.reply_text("❌ TI bo‘sh bo‘lmasin.")
             return CF_EDIT_VALUE
         d["text_color"] = val.strip()
+
     elif key == "qm":
         d["qm_note"] = val.strip()
+
     elif key == "qty":
         dd = _digits_only(val)
         if not dd:
             await update.message.reply_text("❌ S noto‘g‘ri. Masalan: 3000")
             return CF_EDIT_VALUE
         d["qty"] = int(dd)
+
     elif key == "channel":
         context.user_data.pop("edit_key", None)
         await update.message.reply_text("📊 KL (Kanal) ni tanlaymiz...")

@@ -57,9 +57,9 @@ from .handlers.order import (
 # ===== CONFIRM (tasdiq) =====
 from .handlers.confirm import (
     tasdiq_start,
-    on_new_confirm_click,   # ✅ endi 2 tugma (search/format)
-    on_cp_search_text,      # ✅ NEW
-    on_cp_pick,             # ✅ NEW
+    on_new_confirm_click,
+    on_cp_search_text,
+    on_cp_pick,
     on_pick,
     on_new_confirm_cp,
     on_photo,
@@ -77,9 +77,10 @@ from .handlers.confirm import (
     on_edit_choose,
     on_edit_value,
     CF_PICK,
-    CF_NEW_CP,
-    CF_CP_SEARCH,           # ✅ NEW
-    CF_CP_PICK,             # ✅ NEW
+    CF_NEW_CLICK,
+    CF_CP_SEARCH,
+    CF_CP_PICK,
+    CF_BRAND_ONLY,
     CF_PHOTO,
     CF_KIND,
     CF_SIZE,
@@ -201,16 +202,15 @@ def build_app() -> Application:
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
             CF_PICK: [
-                CallbackQueryHandler(on_new_confirm_click, pattern=r"^(cfnew_search|cfnew_format)$"),
+                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:(search|format)$"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
 
-            # ✅ yangi qidiruv oqimi
             CF_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_cp_search_text)],
             CF_CP_PICK: [CallbackQueryHandler(on_cp_pick, pattern=r"^cfcp:")],
 
-            # eski format yoki brand-only shu state orqali keladi
-            CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+            CF_BRAND_ONLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+            CF_NEW_CLICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
 
             CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
