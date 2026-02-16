@@ -64,11 +64,12 @@ from .handlers.confirm import (
     on_photo,
     on_kind,
     on_size,
-    on_bg,          # ✅ NEW
-    on_text,        # ✅ NEW
+    on_bg,
+    on_text,
+    on_qm,          # ✅ NEW (Q.M)
     on_qty,
     on_channel_pick,
-    on_groups_page, # ✅ paging
+    on_groups_page,
     on_group_pick,
     on_price,
     on_review,
@@ -79,8 +80,9 @@ from .handlers.confirm import (
     CF_PHOTO,
     CF_KIND,
     CF_SIZE,
-    CF_BG,          # ✅ NEW
-    CF_TEXT,        # ✅ NEW
+    CF_BG,
+    CF_TEXT,
+    CF_QM,          # ✅ NEW (Q.M)
     CF_QTY,
     CF_CHANNEL,
     CF_GROUP,
@@ -114,8 +116,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def on_error(update, context):
+    # Global error handler (debug uchun)
+    logger.exception("Unhandled exception. update=%s", update, exc_info=context.error)
+
+
 def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
+
+    # Global error handler
+    application.add_error_handler(on_error)
 
     # START
     application.add_handler(CommandHandler("start", start))
@@ -203,15 +213,16 @@ def build_app() -> Application:
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
             CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
 
-            # ✅ NEW 2 steps
             CF_BG: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_bg)],
             CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
+
+            # ✅ NEW: Q.M
+            CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
 
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
 
             CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
 
-            # ✅ paging + pick
             CF_GROUP: [
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
                 CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
