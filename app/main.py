@@ -14,7 +14,6 @@ from telegram.ext import (
 
 from .config import BOT_TOKEN
 from .db import init_db
-
 from .handlers.start import start
 
 # ===== AUTH =====
@@ -58,9 +57,10 @@ from .handlers.order import (
 # ===== CONFIRM (tasdiq) =====
 from .handlers.confirm import (
     tasdiq_start,
+    on_new_confirm_click,   # ✅ endi 2 tugma (search/format)
+    on_cp_search_text,      # ✅ NEW
+    on_cp_pick,             # ✅ NEW
     on_pick,
-    on_pick_search_text,   # ✅ NEW (qidirish)
-    on_new_confirm_click,
     on_new_confirm_cp,
     on_photo,
     on_kind,
@@ -78,6 +78,8 @@ from .handlers.confirm import (
     on_edit_value,
     CF_PICK,
     CF_NEW_CP,
+    CF_CP_SEARCH,           # ✅ NEW
+    CF_CP_PICK,             # ✅ NEW
     CF_PHOTO,
     CF_KIND,
     CF_SIZE,
@@ -125,7 +127,6 @@ def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_error_handler(on_error)
 
-    # START
     application.add_handler(CommandHandler("start", start))
 
     # ================= AUTH =================
@@ -200,14 +201,17 @@ def build_app() -> Application:
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
             CF_PICK: [
-                # ✅ qidirish (text)
-                MessageHandler(filters.TEXT & ~filters.COMMAND, on_pick_search_text),
-
-                # tugmalar
-                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew$"),
+                CallbackQueryHandler(on_new_confirm_click, pattern=r"^(cfnew_search|cfnew_format)$"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
+
+            # ✅ yangi qidiruv oqimi
+            CF_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_cp_search_text)],
+            CF_CP_PICK: [CallbackQueryHandler(on_cp_pick, pattern=r"^cfcp:")],
+
+            # eski format yoki brand-only shu state orqali keladi
             CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+
             CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
             CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
