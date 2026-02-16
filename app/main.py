@@ -123,6 +123,7 @@ async def on_error(update, context):
 def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Global error handler
     application.add_error_handler(on_error)
 
     # START
@@ -205,6 +206,7 @@ def build_app() -> Application:
             ],
             CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
 
+            # Photo yoki Document (image/*) - tekshiruv confirm.py ichida
             CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
 
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
@@ -215,12 +217,16 @@ def build_app() -> Application:
             CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],  # ✅ NEW
 
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
+
             CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
+
             CF_GROUP: [
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
                 CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
             ],
+
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
+
             CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
             CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
             CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
