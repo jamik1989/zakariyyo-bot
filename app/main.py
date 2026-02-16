@@ -66,7 +66,7 @@ from .handlers.confirm import (
     on_size,
     on_bg,
     on_text,
-    on_qm,          # ✅ NEW (Q.M)
+    on_qm,           # ✅ NEW
     on_qty,
     on_channel_pick,
     on_groups_page,
@@ -82,7 +82,7 @@ from .handlers.confirm import (
     CF_SIZE,
     CF_BG,
     CF_TEXT,
-    CF_QM,          # ✅ NEW (Q.M)
+    CF_QM,           # ✅ NEW
     CF_QTY,
     CF_CHANNEL,
     CF_GROUP,
@@ -117,14 +117,12 @@ logger = logging.getLogger(__name__)
 
 
 async def on_error(update, context):
-    # Global error handler (debug uchun)
     logger.exception("Unhandled exception. update=%s", update, exc_info=context.error)
 
 
 def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Global error handler
     application.add_error_handler(on_error)
 
     # START
@@ -207,29 +205,22 @@ def build_app() -> Application:
             ],
             CF_NEW_CP: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
 
-            # Document.ALL: confirm.py ichida image mime tekshiriladi
             CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
 
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
             CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
-
             CF_BG: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_bg)],
             CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
 
-            # ✅ NEW: Q.M
-            CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
+            CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],  # ✅ NEW
 
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
-
             CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
-
             CF_GROUP: [
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
                 CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
             ],
-
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
-
             CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
             CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
             CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
