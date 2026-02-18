@@ -74,6 +74,7 @@ from .handlers.confirm import (
     on_group_pick,
     on_price,
     on_review,
+    on_time_text,     # ✅ NEW
     on_edit_choose,
     on_edit_value,
     CF_PICK,
@@ -92,6 +93,7 @@ from .handlers.confirm import (
     CF_GROUP,
     CF_PRICE,
     CF_REVIEW,
+    CF_TIME,          # ✅ NEW
     CF_EDIT_CHOOSE,
     CF_EDIT_VALUE,
     cancel as cancel_confirm,
@@ -226,6 +228,10 @@ def build_app() -> Application:
             ],
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
             CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
+
+            # ✅ NEW: vaqt tahrirlash
+            CF_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_time_text)],
+
             CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
             CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
         },

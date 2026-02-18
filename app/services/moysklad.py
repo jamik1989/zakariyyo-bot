@@ -86,6 +86,38 @@ def get_sales_channels(limit: int = 50) -> List[Dict[str, Any]]:
     return data.get("rows", []) or []
 
 
+# ================= STORE (Склад) =================
+
+def get_stores(limit: int = 1000) -> List[Dict[str, Any]]:
+    data = ms_get("/entity/store", params={"limit": limit})
+    if not isinstance(data, dict):
+        return []
+    return data.get("rows", []) or []
+
+
+def find_store_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """
+    Store (Склад) meta topish: /entity/store
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+
+    rows = get_stores(limit=2000)
+    # 1) exact match
+    for r in rows:
+        if (r.get("name") or "").strip() == name and r.get("meta"):
+            return r["meta"]
+
+    # 2) case-insensitive contains
+    nlow = name.lower()
+    for r in rows:
+        if nlow in (r.get("name") or "").lower() and r.get("meta"):
+            return r["meta"]
+
+    return None
+
+
 # ================= COUNTERPARTY =================
 
 def _norm_phone_digits(phone: str) -> str:
@@ -100,15 +132,10 @@ def _norm_phone_plus(phone: str) -> str:
         return "+" + d
     if len(d) == 9:
         return "+998" + d
-    # fallback
     return "+" + d
 
 
 def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
-    """
-    MoySklad'da ba'zan phone filter keskin ishlaydi.
-    Shuning uchun bir nechta filter variant bilan urinib ko'ramiz.
-    """
     digits = _norm_phone_digits(phone)
     if not digits:
         return None
@@ -118,7 +145,6 @@ def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
     if plus:
         variants.append(plus)
     variants.append(digits)
-    # oxirgi 9 raqam bilan ham sinaymiz
     if len(digits) >= 9:
         variants.append(digits[-9:])
 
@@ -146,11 +172,6 @@ def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
 
 
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
-    """
-    1) Telefon bo'yicha topish (bir nechta filter variant)
-    2) Name bo'yicha search
-    3) Topilmasa create
-    """
     name = (name or "").strip()
     phone_raw = (phone or "").strip()
 
@@ -163,7 +184,6 @@ def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[s
             if name and (found.get("name") or "").strip() != name:
                 updates["name"] = name
 
-            # MoySklad odatda phone ni +998... formatda ushlaydi
             phone_plus = _norm_phone_plus(phone_raw) or phone_raw
             if phone_plus and (found.get("phone") or "").strip() != phone_plus:
                 updates["phone"] = phone_plus
@@ -286,7 +306,7 @@ def attach_file_to_customerorder(order_id: str, file_path: str) -> Optional[Dict
     return _attach_file_generic("customerorder", order_id, file_path)
 
 
-# ==================== PRICE TYPES (Цены продажа) ====================
+# ==================== PRICE TYPES ====================
 
 def get_price_types(limit: int = 100) -> List[Dict[str, Any]]:
     data = ms_get("/context/companysettings/pricetype", params={"limit": limit})
@@ -324,7 +344,7 @@ def get_or_create_price_type_meta(name: str) -> Optional[Dict[str, Any]]:
     return find_price_type_meta_by_name(name)
 
 
-# ==================== PRODUCT FOLDERS (Группы) ====================
+# ==================== PRODUCT FOLDERS ====================
 
 def get_product_folders(limit: int = 50) -> List[Dict[str, Any]]:
     data = ms_get("/entity/productfolder", params={"limit": limit})
@@ -333,7 +353,7 @@ def get_product_folders(limit: int = 50) -> List[Dict[str, Any]]:
     return data.get("rows", []) or []
 
 
-# ==================== PRODUCT (+ Создать новый товар) ====================
+# ==================== PRODUCT ====================
 
 def create_product(
     name: str,
@@ -374,7 +394,7 @@ def create_product(
     return ms_post("/entity/product", payload)
 
 
-# ==================== PRODUCT IMAGE (Изображения) ====================
+# ==================== PRODUCT IMAGE ====================
 
 def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[str, Any]]:
     if not product_id or not file_path or not os.path.exists(file_path):
@@ -418,12 +438,9 @@ def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[st
     return None
 
 
-# ==================== CUSTOMER ORDER IMAGE (Изображения) ====================
+# ==================== CUSTOMER ORDER IMAGE ====================
 
 def attach_image_to_customerorder(order_id: str, file_path: str) -> Optional[Dict[str, Any]]:
-    """
-    Заказ покупателя карточkasidagi "Изображение" bo‘limiga yuklash.
-    """
     if not order_id or not file_path or not os.path.exists(file_path):
         logger.warning("Order image: missing order_id or file not found. order=%s file=%s", order_id, file_path)
         return None
@@ -465,7 +482,7 @@ def attach_image_to_customerorder(order_id: str, file_path: str) -> Optional[Dic
     return None
 
 
-# ==================== CUSTOMER ORDER (Продажи → Заказы покупателей) ====================
+# ==================== CUSTOMER ORDER ====================
 
 def create_customerorder(
     organization_meta: Dict[str, Any],
@@ -474,8 +491,9 @@ def create_customerorder(
     description: str,
     sales_channel_meta: Optional[Dict[str, Any]] = None,
     positions: Optional[List[Dict[str, Any]]] = None,
-    vat_enabled: bool = False,   # ✅ NEW: НДС OFF
-    vat_included: bool = False,  # ✅ NEW: Цена включает НДС OFF
+    store_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW
+    vat_enabled: bool = False,
+    vat_included: bool = False,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
@@ -488,6 +506,8 @@ def create_customerorder(
     }
     if sales_channel_meta:
         payload["salesChannel"] = {"meta": sales_channel_meta}
+    if store_meta:
+        payload["store"] = {"meta": store_meta}  # ✅ Sklad
     if positions:
         payload["positions"] = positions
     return ms_post("/entity/customerorder", payload)
