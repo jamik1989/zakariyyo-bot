@@ -104,12 +104,10 @@ def find_store_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
         return None
 
     rows = get_stores(limit=2000)
-    # 1) exact match
     for r in rows:
         if (r.get("name") or "").strip() == name and r.get("meta"):
             return r["meta"]
 
-    # 2) case-insensitive contains
     nlow = name.lower()
     for r in rows:
         if nlow in (r.get("name") or "").lower() and r.get("meta"):
@@ -118,12 +116,9 @@ def find_store_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# ================= UOM (Единицы измерения) =================
+# ================= UOM (Единица измерения) =================
 
 def get_uoms(limit: int = 1000) -> List[Dict[str, Any]]:
-    """
-    /entity/uom -> Единицы измерения
-    """
     data = ms_get("/entity/uom", params={"limit": limit})
     if not isinstance(data, dict):
         return []
@@ -131,36 +126,69 @@ def get_uoms(limit: int = 1000) -> List[Dict[str, Any]]:
 
 
 def find_uom_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
-    """
-    UOM meta topish: /entity/uom
-    Kutiladigan nomlar: "шт", "кг", "рулон"
-    """
     name = (name or "").strip()
     if not name:
         return None
 
-    # 1) filter bilan urinamiz (tezroq)
-    try:
-        data = ms_get("/entity/uom", params={"filter": f"name={name}", "limit": 50})
-        if isinstance(data, dict):
-            rows = data.get("rows", []) or []
-            for r in rows:
-                if (r.get("name") or "").strip() == name and r.get("meta"):
-                    return r["meta"]
-    except Exception:
-        pass
-
-    # 2) fallback: barcha UOM ichidan qidiramiz
     rows = get_uoms(limit=2000)
 
+    # 1) exact
     for r in rows:
         if (r.get("name") or "").strip() == name and r.get("meta"):
             return r["meta"]
 
+    # 2) contains (case-insensitive)
     nlow = name.lower()
     for r in rows:
-        if nlow == (r.get("name") or "").strip().lower() and r.get("meta"):
+        if nlow in (r.get("name") or "").lower() and r.get("meta"):
             return r["meta"]
+
+    return None
+
+
+def _norm_uom_name(unit_ru: str) -> str:
+    """
+    Bizning botdan keladigan birliklar:
+    - 'шт', 'кг', 'рулон' (ru)
+    - ehtimol 'sht', 'kg', 'rulon' (lat) bo'lib qolsa ham normalize qilamiz
+    """
+    u = (unit_ru or "").strip().lower()
+    if not u:
+        return ""
+
+    # ru/lat aralash holatlar
+    if u in ("шт", "sht", "sh", "sht.", "sh."):
+        return "шт"
+    if u in ("кг", "kg"):
+        return "кг"
+    if u in ("рулон", "rulon", "rul", "rul."):
+        return "рулон"
+
+    # default: nima bo'lsa ham (masalan "м", "пачка" va h.k.)
+    return unit_ru.strip()
+
+
+def get_or_create_uom_meta(unit_ru: str) -> Optional[Dict[str, Any]]:
+    """
+    MoySklad'dan UOM meta topadi.
+    Topilmasa, yaratishga urinadi (agar ruxsat bo'lsa).
+    Topilmasa ham bot ishlashiga halal bermaydi (None qaytaradi).
+    """
+    name = _norm_uom_name(unit_ru)
+    if not name:
+        return None
+
+    meta = find_uom_meta_by_name(name)
+    if meta:
+        return meta
+
+    # create (agar API ruxsat bersa)
+    try:
+        created = ms_post("/entity/uom", {"name": name})
+        if isinstance(created, dict) and created.get("meta"):
+            return created["meta"]
+    except Exception as e:
+        logger.warning("UOM create failed: name=%s err=%s", name, e)
 
     return None
 
@@ -407,7 +435,7 @@ def create_product(
     productfolder_meta: Dict[str, Any],
     sale_price_uzs: int,
     price_type_meta: Optional[Dict[str, Any]] = None,
-    uom_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW: Единица измерения
+    uom_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW (шт/кг/рулон)
 ) -> Dict[str, Any]:
     name = (name or "").strip()
     if not name:
@@ -440,7 +468,7 @@ def create_product(
         ],
     }
 
-    # ✅ unit (Единица измерения)
+    # ✅ UOM: Единица измерения (шт/кг/рулон)
     if uom_meta:
         payload["uom"] = {"meta": uom_meta}
 
@@ -544,7 +572,7 @@ def create_customerorder(
     description: str,
     sales_channel_meta: Optional[Dict[str, Any]] = None,
     positions: Optional[List[Dict[str, Any]]] = None,
-    store_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW
+    store_meta: Optional[Dict[str, Any]] = None,
     vat_enabled: bool = False,
     vat_included: bool = False,
 ) -> Dict[str, Any]:
@@ -553,14 +581,14 @@ def create_customerorder(
         "agent": {"meta": agent_meta},
         "moment": moment_iso,
         "description": description,
-        "applicable": False,   # черновик
+        "applicable": False,
         "vatEnabled": bool(vat_enabled),
         "vatIncluded": bool(vat_included),
     }
     if sales_channel_meta:
         payload["salesChannel"] = {"meta": sales_channel_meta}
     if store_meta:
-        payload["store"] = {"meta": store_meta}  # ✅ Sklad
+        payload["store"] = {"meta": store_meta}
     if positions:
         payload["positions"] = positions
     return ms_post("/entity/customerorder", payload)
