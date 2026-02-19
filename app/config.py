@@ -15,6 +15,9 @@ GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0") or "0")
 # /tasdiq modul kanali
 CONFIRM_CHAT_ID = int(os.getenv("CONFIRM_CHAT_ID", "0") or "0")
 
+# ✅ /tasdiq modulidan tushadigan buyurtmalar uchun sklad nomi
+TASDIQ_STORE_NAME = os.getenv("TASDIQ_STORE_NAME", "Abusahiy 75").strip()
+
 # Adminlar (Telegram user ID), vergul bilan: 123,456
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = [int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
