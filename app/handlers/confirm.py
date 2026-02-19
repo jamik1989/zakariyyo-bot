@@ -883,7 +883,6 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return CF_CHANNEL
 
-    # normal (yoki locked bilan bir xil)
     if locked_meta:
         d = context.user_data["confirm_data"]
         d["sales_channel_meta"] = locked_meta
@@ -1008,13 +1007,14 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not moment_iso:
         moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
+    # items: batch + current
     items: List[Dict[str, Any]] = []
     batch = context.user_data.get("confirm_batch") or []
     if batch:
         items.extend(batch)
     items.append(_clone_item_for_batch(d))
 
-    # ✅ Kanalni xatoga tushirmaymiz: batch lock bo'lsa, hammasini lock kanalga majburlaymiz
+    # ✅ Kanal: batch lock bo'lsa, hammasi lock kanal
     locked_meta, locked_name = _get_locked_batch_channel(context)
     if locked_meta:
         sc_meta = locked_meta
@@ -1028,16 +1028,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             it["sales_channel_meta"] = sc_meta
             it["sales_channel_name"] = sc_name
 
-    desc_lines = [f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}"]
-    for idx, it in enumerate(items, start=1):
-        unit_ru = (it.get("qty_unit_ru") or "").strip()
-        qty_ru = f"{it.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
-        desc_lines.append(
-            f"{idx}) MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
-            f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}"
-        )
-    desc = "\n".join(desc_lines)
-
+    # ✅ MoySklad’da: har bir item -> alohida order
     try:
         org = get_default_organization()
 
@@ -1049,10 +1040,25 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pt_meta:
             pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
 
-        positions: List[Dict[str, Any]] = []
-        attach_paths: List[str] = []
+        created_orders: List[Dict[str, Any]] = []
 
-        for it in items:
+        total = len(items)
+        for idx, it in enumerate(items, start=1):
+            if not _item_is_complete(it):
+                raise RuntimeError("Batch ichida to‘liq bo‘lmagan buyurtma bor (rasm/maydonlar).")
+
+            # per-item description
+            unit_ru = (it.get("qty_unit_ru") or "").strip()
+            qty_ru = f"{it.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
+
+            desc = "\n".join([
+                f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
+                f"Item: {idx}/{total}",
+                f"MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
+                f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
+            ])
+
+            # product
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
@@ -1068,6 +1074,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if prod_id:
                 attach_image_to_product(prod_id, it.get("image_path"))
 
+            positions: List[Dict[str, Any]] = []
             if prod_meta:
                 positions.append({
                     "assortment": {"meta": prod_meta},
@@ -1075,26 +1082,47 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "price": int(it.get("price_uzs")) * 100,
                 })
 
-            attach_paths.append(it.get("image_path"))
+            order = create_customerorder(
+                organization_meta=org["meta"],
+                agent_meta=cp_meta,
+                sales_channel_meta=sc_meta,
+                store_meta=store_meta,
+                moment_iso=moment_iso,
+                description=desc,
+                positions=positions,
+            )
+            order_id = str(order.get("id") or "")
 
-        order = create_customerorder(
-            organization_meta=org["meta"],
-            agent_meta=cp_meta,
-            sales_channel_meta=sc_meta,
-            store_meta=store_meta,  # ✅ Abusahiy 75
-            moment_iso=moment_iso,
-            description=desc,
-            positions=positions,
-        )
-        order_id = str(order.get("id") or "")
-
-        if order_id:
-            for p in attach_paths:
+            if order_id:
                 try:
-                    attach_file_to_customerorder(order_id, p)
+                    attach_file_to_customerorder(order_id, it.get("image_path"))
                 except Exception:
                     pass
 
+            created_orders.append(order)
+
+            # ✅ Telegram kanalga: har item alohida post
+            if CONFIRM_CHAT_ID:
+                unit_lat = (it.get("qty_unit_lat") or "").strip()
+                qty_lat = f"{it.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
+
+                caption = (
+                    f"🏷 B: {brand}\n"
+                    f"📦 Buyurtma: {idx}/{total}\n"
+                    f"📊 KL: {sc_name}\n"
+                    f"👨‍💼 OR: {op.get('name')}\n"
+                    f"🕒 Vaqt: {moment_iso}\n"
+                    f"🏬 Sklad: {CONFIRM_STORE_NAME}\n"
+                    f"🧾 MS: {order.get('name', 'N/A')}\n\n"
+                    f"🧾 {it.get('item_type')} | 📏 {it.get('size')} | 🎨 {it.get('bg_color')} | 🔤 {it.get('text_color')} | 🔢 {qty_lat}\n"
+                    f"📝 Q.M: {it.get('qm_note') or '-'}\n"
+                    f"💰 Narx: {it.get('price_uzs')}"
+                )
+
+                with open(it.get("image_path"), "rb") as f:
+                    await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
+
+        # hammasi OK bo'lsa confirm done
         mark_confirm_done(int(op["id"]), cid)
 
         try:
@@ -1104,32 +1132,9 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=q.message.chat_id,
-            text="✅ Sizning buyurtmangiz qabul qilindi.",
+            text=f"✅ Buyurtma(lar) qabul qilindi. MoySklad’da {len(created_orders)} ta buyurtma yaratildi.",
             reply_markup=_menu_keyboard(),
         )
-
-        if CONFIRM_CHAT_ID:
-            lines = []
-            for it in items:
-                unit_lat = (it.get("qty_unit_lat") or "").strip()
-                qty_lat = f"{it.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
-                lines.append(
-                    f"🧾 {it.get('item_type')} | 📏 {it.get('size')} | 🎨 {it.get('bg_color')} | 🔤 {it.get('text_color')} | 🔢 {qty_lat}"
-                )
-
-            caption = (
-                f"🏷 B: {brand}\n"
-                f"📊 KL: {sc_name}\n"
-                f"👨‍💼 OR: {op.get('name')}\n"
-                f"🕒 Vaqt: {moment_iso}\n"
-                f"🏬 Sklad: {CONFIRM_STORE_NAME}\n"
-                f"🧾 MS: {order.get('name', 'N/A')}\n\n"
-                f"📦 Buyurtmalar:\n" + "\n".join(lines)
-            )
-
-            last_path = attach_paths[-1]
-            with open(last_path, "rb") as f:
-                await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
 
     except Exception as e:
         await q.edit_message_text(f"❌ MoySklad yuborishda xatolik: {e}")

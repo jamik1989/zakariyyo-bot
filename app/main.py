@@ -69,13 +69,13 @@ from .handlers.confirm import (
     on_text,
     on_qm,
     on_qty,
-    on_channel_force,  # ✅ NEW (batch kanal lock confirm)
     on_channel_pick,
+    on_channel_force,   # ✅ ADD: cfscforce handler
     on_groups_page,
     on_group_pick,
     on_price,
     on_review,
-    on_time_text,     # ✅ NEW
+    on_time_text,
     on_edit_choose,
     on_edit_value,
     CF_PICK,
@@ -94,7 +94,7 @@ from .handlers.confirm import (
     CF_GROUP,
     CF_PRICE,
     CF_REVIEW,
-    CF_TIME,          # ✅ NEW
+    CF_TIME,
     CF_EDIT_CHOOSE,
     CF_EDIT_VALUE,
     cancel as cancel_confirm,
@@ -224,8 +224,8 @@ def build_app() -> Application:
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
 
             CF_CHANNEL: [
-                CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),
                 CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:"),
+                CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),  # ✅ ADD
             ],
 
             CF_GROUP: [
