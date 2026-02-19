@@ -69,6 +69,7 @@ from .handlers.confirm import (
     on_text,
     on_qm,
     on_qty,
+    on_channel_force,  # ✅ NEW (batch kanal lock confirm)
     on_channel_pick,
     on_groups_page,
     on_group_pick,
@@ -221,7 +222,12 @@ def build_app() -> Application:
             CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
             CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
-            CF_CHANNEL: [CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:")],
+
+            CF_CHANNEL: [
+                CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),
+                CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:"),
+            ],
+
             CF_GROUP: [
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
                 CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
@@ -229,7 +235,6 @@ def build_app() -> Application:
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
             CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
 
-            # ✅ NEW: vaqt tahrirlash
             CF_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_time_text)],
 
             CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],

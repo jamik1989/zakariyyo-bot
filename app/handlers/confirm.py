@@ -261,6 +261,18 @@ def _item_is_complete(it: Dict[str, Any]) -> bool:
         return False
 
 
+def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Batch bo'lsa, birinchi qo'shilgan item kanali LOCK bo'ladi.
+    Keyingi itemlar shu kanal bilan ketadi.
+    """
+    batch = context.user_data.get("confirm_batch") or []
+    if not batch:
+        return None, ""
+    first = batch[0] or {}
+    return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
+
+
 def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     d = context.user_data.get("confirm_data") or {}
     img_ok = bool(d.get("image_path") and os.path.exists(d["image_path"]))
@@ -278,6 +290,9 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     batch = context.user_data.get("confirm_batch") or []
     batch_info = f"📦 Batch: {len(batch) + 1} ta buyurtma (yig‘ilmoqda)\n\n" if batch else ""
 
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    lock_info = f"🔒 Batch KL: {locked_name}\n" if locked_meta and locked_name else ""
+
     return (
         f"{batch_info}"
         "🔎 Tekshiruv (Tasdiqlash):\n\n"
@@ -290,12 +305,40 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"🔢 S: {qty_show}\n"
         f"💰 Narx: {_fmt_int(d.get('price_uzs'))}\n"
         f"📊 KL: {d.get('sales_channel_name') or 'N/A'}\n"
+        f"{lock_info}"
         f"📁 Группа: {d.get('group_name') or 'N/A'}\n"
         f"🏬 Sklad: {CONFIRM_STORE_NAME}\n"
         f"🕒 Vaqt: {moment}\n"
         f"🖼 Rasm: {img}\n\n"
         "Davom etamizmi?"
     )
+
+
+async def on_channel_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Batch lock kanalidan boshqa kanal bosilganda:
+    - ogohlantirish chiqadi
+    - 'Davom etish' bosilsa, lock kanalni qo'yib davom etadi
+    """
+    q = update.callback_query
+    await q.answer()
+    _ensure_confirm_data(context)
+
+    action = (q.data or "").split("cfscforce:", 1)[-1]
+
+    if action == "retry":
+        return await _ask_sales_channel(q, context)
+
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    if not locked_meta:
+        return await _ask_sales_channel(q, context)
+
+    d = context.user_data["confirm_data"]
+    d["sales_channel_meta"] = locked_meta
+    d["sales_channel_name"] = locked_name
+    context.user_data["confirm_data"] = d
+
+    return await _ask_product_group(q, context, page=0)
 
 
 async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
@@ -314,10 +357,13 @@ async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"cfsc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(kb)
 
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    hint = f"\n\n🔒 Batch kanali: {locked_name}" if locked_meta and locked_name else ""
+
     if hasattr(update_obj, "edit_message_text"):
-        await update_obj.edit_message_text("📊 KL (Kanal) ni tanlang:", reply_markup=markup)
+        await update_obj.edit_message_text("📊 KL (Kanal) ni tanlang:" + hint, reply_markup=markup)
     else:
-        await update_obj.reply_text("📊 KL (Kanal) ni tanlang:", reply_markup=markup)
+        await update_obj.reply_text("📊 KL (Kanal) ni tanlang:" + hint, reply_markup=markup)
 
     return CF_CHANNEL
 
@@ -819,10 +865,35 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Kanal topilmadi. Qaytadan /tasdiq qiling.")
         return ConversationHandler.END
 
-    d = context.user_data["confirm_data"]
-    d["sales_channel_meta"] = ch.get("meta")
-    d["sales_channel_name"] = ch.get("name") or ""
-    context.user_data["confirm_data"] = d
+    chosen_meta = ch.get("meta")
+    chosen_name = ch.get("name") or ""
+
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    if locked_meta and chosen_meta != locked_meta:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Davom etish", callback_data="cfscforce:ok")],
+            [InlineKeyboardButton("🔄 Qayta tanlash", callback_data="cfscforce:retry")],
+        ])
+        await q.edit_message_text(
+            "⚠️ Batchda KL (Kanal) bitta bo‘lishi kerak.\n\n"
+            f"✅ Siz shu kanalni tanlagansiz: {locked_name}\n"
+            f"❗ Siz hozir bosdingiz: {chosen_name}\n\n"
+            "✅ Davom etish bosilsa, batchdagi kanal bilan davom etadi.",
+            reply_markup=kb
+        )
+        return CF_CHANNEL
+
+    # normal (yoki locked bilan bir xil)
+    if locked_meta:
+        d = context.user_data["confirm_data"]
+        d["sales_channel_meta"] = locked_meta
+        d["sales_channel_name"] = locked_name
+        context.user_data["confirm_data"] = d
+    else:
+        d = context.user_data["confirm_data"]
+        d["sales_channel_meta"] = chosen_meta
+        d["sales_channel_name"] = chosen_name
+        context.user_data["confirm_data"] = d
 
     return await _ask_product_group(q, context, page=0)
 
@@ -943,12 +1014,19 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         items.extend(batch)
     items.append(_clone_item_for_batch(d))
 
-    sc_meta = items[-1].get("sales_channel_meta")
-    sc_name = items[-1].get("sales_channel_name") or ""
+    # ✅ Kanalni xatoga tushirmaymiz: batch lock bo'lsa, hammasini lock kanalga majburlaymiz
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    if locked_meta:
+        sc_meta = locked_meta
+        sc_name = locked_name
+    else:
+        sc_meta = items[-1].get("sales_channel_meta")
+        sc_name = items[-1].get("sales_channel_name") or ""
+
     for it in items:
         if it.get("sales_channel_meta") != sc_meta:
-            await q.edit_message_text("❌ Batchda KL (Kanal) turlicha. Bitta kanal bo‘lsin.")
-            return ConversationHandler.END
+            it["sales_channel_meta"] = sc_meta
+            it["sales_channel_name"] = sc_name
 
     desc_lines = [f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}"]
     for idx, it in enumerate(items, start=1):
