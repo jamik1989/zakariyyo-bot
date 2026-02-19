@@ -118,6 +118,53 @@ def find_store_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# ================= UOM (Единицы измерения) =================
+
+def get_uoms(limit: int = 1000) -> List[Dict[str, Any]]:
+    """
+    /entity/uom -> Единицы измерения
+    """
+    data = ms_get("/entity/uom", params={"limit": limit})
+    if not isinstance(data, dict):
+        return []
+    return data.get("rows", []) or []
+
+
+def find_uom_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """
+    UOM meta topish: /entity/uom
+    Kutiladigan nomlar: "шт", "кг", "рулон"
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+
+    # 1) filter bilan urinamiz (tezroq)
+    try:
+        data = ms_get("/entity/uom", params={"filter": f"name={name}", "limit": 50})
+        if isinstance(data, dict):
+            rows = data.get("rows", []) or []
+            for r in rows:
+                if (r.get("name") or "").strip() == name and r.get("meta"):
+                    return r["meta"]
+    except Exception:
+        pass
+
+    # 2) fallback: barcha UOM ichidan qidiramiz
+    rows = get_uoms(limit=2000)
+
+    for r in rows:
+        if (r.get("name") or "").strip() == name and r.get("meta"):
+            return r["meta"]
+
+    nlow = name.lower()
+    for r in rows:
+        if nlow == (r.get("name") or "").strip().lower() and r.get("meta"):
+            return r["meta"]
+
+    return None
+
+
 # ================= COUNTERPARTY =================
 
 def _norm_phone_digits(phone: str) -> str:
@@ -360,6 +407,7 @@ def create_product(
     productfolder_meta: Dict[str, Any],
     sale_price_uzs: int,
     price_type_meta: Optional[Dict[str, Any]] = None,
+    uom_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW: Единица измерения
 ) -> Dict[str, Any]:
     name = (name or "").strip()
     if not name:
@@ -391,6 +439,11 @@ def create_product(
             }
         ],
     }
+
+    # ✅ unit (Единица измерения)
+    if uom_meta:
+        payload["uom"] = {"meta": uom_meta}
+
     return ms_post("/entity/product", payload)
 
 

@@ -23,7 +23,8 @@ from ..services.moysklad import (
     get_sales_channels,
     get_product_folders,
     find_price_type_meta_by_name,
-    find_store_meta_by_name,  # ✅ NEW
+    find_store_meta_by_name,
+    get_or_create_uom_meta,  # ✅ NEW: UOM (шт/кг/рулон)
     create_product,
     attach_image_to_product,
     create_customerorder,
@@ -51,7 +52,7 @@ from ..services.moysklad import (
     CF_REVIEW,
     CF_EDIT_CHOOSE,
     CF_EDIT_VALUE,
-    CF_TIME,  # ✅ NEW
+    CF_TIME,
 ) = range(19)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
@@ -1097,6 +1098,11 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
             ])
 
+            # ✅ UOM (Единица измерения) — шт/кг/рулон
+            # unit_ru: "шт" / "кг" / "рулон" (parse_qty_and_unit shuni beradi)
+            uom_name = unit_ru if unit_ru else "шт"
+            uom_meta = get_or_create_uom_meta(uom_name)  # topilmasa yaratishga urinadi; bo'lmasa None
+
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
@@ -1105,6 +1111,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 productfolder_meta=it.get("group_meta"),
                 sale_price_uzs=int(it.get("price_uzs")),
                 price_type_meta=pt_meta,
+                uom_meta=uom_meta,  # ✅ NEW: unit MoySklad product kartasida chiqadi
             )
             prod_id = str(prod.get("id") or "")
             prod_meta = prod.get("meta")
