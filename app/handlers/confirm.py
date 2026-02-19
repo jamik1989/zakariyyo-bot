@@ -273,40 +273,6 @@ def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
     return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
 
 
-def _build_channel_caption(
-    brand: str,
-    idx: int,
-    total: int,
-    sc_name: str,
-    operator_name: str,
-    moment_iso: str,
-    ms_name: str,
-    item: Dict[str, Any],
-) -> str:
-    unit_lat = (item.get("qty_unit_lat") or "").strip()
-    qty_lat = f"{item.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
-
-    qm = (item.get("qm_note") or "").strip()
-    qm_show = qm if qm else "—"
-
-    return (
-        f"🏷 B: {brand}\n"
-        f"📦 Buyurtma: {idx}/{total}\n"
-        f"📊 KL: {sc_name}\n"
-        f"👨‍💼 OR: {operator_name}\n"
-        f"🕒 Vaqt: {moment_iso}\n"
-        f"🏬 Sklad: {CONFIRM_STORE_NAME}\n"
-        f"🧾 MS: {ms_name}\n\n"
-        f"🧾 {item.get('item_type')}\n"
-        f"📏 {item.get('size')}\n"
-        f"🎨 {item.get('bg_color')}\n"
-        f"🔤 {item.get('text_color')}\n"
-        f"🔢 {qty_lat}\n"
-        f"📝 Q.M: {qm_show}\n"
-        f"💰 Narx: {item.get('price_uzs')}"
-    )
-
-
 def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     d = context.user_data.get("confirm_data") or {}
     img_ok = bool(d.get("image_path") and os.path.exists(d["image_path"]))
@@ -977,6 +943,46 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
+def _build_channel_caption(
+    *,
+    idx: int,
+    total: int,
+    brand: str,
+    item: Dict[str, Any],
+    sc_name: str,
+    operator_name: str,
+    moment_iso: str,
+    order_name: str,
+) -> str:
+    """
+    Telegram kanal caption:
+    - Narx ko'rinmaydi (faqat MoySklad description'da qoladi)
+    - Q.M ko'rinadi
+    - Bo'sh qator YO'Q (ketma-ket)
+    - Tartib: Buyurtma -> Brand -> Item blok -> KL/OR/Vaqt/Sklad/MS
+    """
+    unit_lat = (item.get("qty_unit_lat") or "").strip()
+    qty_lat = f"{item.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
+    qm = (item.get("qm_note") or "").strip()
+    qm_show = qm if qm else "-"
+
+    return "\n".join([
+        f"📦 Buyurtma: {idx}/{total}",
+        f"🏷 B: {brand}",
+        f"🧾 {item.get('item_type')}",
+        f"📏 {item.get('size')}",
+        f"🎨 {item.get('bg_color')}",
+        f"🔤 {item.get('text_color')}",
+        f"🔢 {qty_lat}",
+        f"📝 Q.M: {qm_show}",
+        f"📊 KL: {sc_name}",
+        f"👨‍💼 OR: {operator_name}",
+        f"🕒 Vaqt: {moment_iso}",
+        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
+        f"🧾 MS: {order_name}",
+    ])
+
+
 async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1074,18 +1080,18 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
 
         created_orders: List[Dict[str, Any]] = []
-        total = len(items)
-        operator_name = op.get("name") or "N/A"
 
+        total = len(items)
         for idx, it in enumerate(items, start=1):
             if not _item_is_complete(it):
                 raise RuntimeError("Batch ichida to‘liq bo‘lmagan buyurtma bor (rasm/maydonlar).")
 
+            # MoySklad description (Narx + Q.M shu yerda qoladi)
             unit_ru = (it.get("qty_unit_ru") or "").strip()
             qty_ru = f"{it.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
 
             desc = "\n".join([
-                f"[BOT TASDIQLASH] B: {brand} | Operator: {operator_name} | Store: {CONFIRM_STORE_NAME}",
+                f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
                 f"Item: {idx}/{total}",
                 f"MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
                 f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
@@ -1133,27 +1139,21 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             created_orders.append(order)
 
-            # ✅ Telegram kanalga: har item alohida post (SIZ XOHlagan FORMATDA)
+            # Telegram kanalga: Narx chiqmaydi, Q.M chiqadi
             if CONFIRM_CHAT_ID:
                 caption = _build_channel_caption(
-                    brand=brand,
                     idx=idx,
                     total=total,
-                    sc_name=sc_name,
-                    operator_name=operator_name,
-                    moment_iso=moment_iso,
-                    ms_name=order.get("name", "N/A"),
+                    brand=brand,
                     item=it,
+                    sc_name=sc_name,
+                    operator_name=op.get("name"),
+                    moment_iso=moment_iso,
+                    order_name=order.get("name", "N/A"),
                 )
+                with open(it.get("image_path"), "rb") as f:
+                    await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
 
-                path = it.get("image_path")
-                if path and os.path.exists(path):
-                    with open(path, "rb") as f:
-                        await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
-                else:
-                    await context.bot.send_message(chat_id=CONFIRM_CHAT_ID, text=caption)
-
-        # ✅ hammasi OK bo'lsa confirm done
         mark_confirm_done(int(op["id"]), cid)
 
         try:
