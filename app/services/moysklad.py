@@ -118,6 +118,50 @@ def find_store_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# ================= UOM (Единица измерения) =================
+
+def get_uoms(limit: int = 2000) -> List[Dict[str, Any]]:
+    """
+    Единицы измерения: /entity/uom
+    """
+    data = ms_get("/entity/uom", params={"limit": limit})
+    if not isinstance(data, dict):
+        return []
+    return data.get("rows", []) or []
+
+
+def find_uom_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """
+    name: 'шт' / 'кг' / 'рулон' (yoki to'liq nomi MoySklad'dagi)
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+
+    rows = get_uoms(limit=2000)
+
+    # 1) exact
+    for r in rows:
+        if (r.get("name") or "").strip() == name and r.get("meta"):
+            return r["meta"]
+
+    # 2) case-insensitive contains
+    nlow = name.lower()
+    for r in rows:
+        if nlow in (r.get("name") or "").lower() and r.get("meta"):
+            return r["meta"]
+
+    return None
+
+
+def get_or_create_uom_meta(name: str) -> Optional[Dict[str, Any]]:
+    """
+    MoySklad'da odatda UOM oldindan bor bo'ladi (шт/кг/рулон).
+    Shu sabab create qilmaymiz, faqat topamiz.
+    """
+    return find_uom_meta_by_name(name)
+
+
 # ================= COUNTERPARTY =================
 
 def _norm_phone_digits(phone: str) -> str:
@@ -344,50 +388,6 @@ def get_or_create_price_type_meta(name: str) -> Optional[Dict[str, Any]]:
     return find_price_type_meta_by_name(name)
 
 
-# ==================== UOM (Единица измерения) ====================
-
-def get_uoms(limit: int = 1000) -> List[Dict[str, Any]]:
-    """
-    /entity/uom -> Единицы измерения
-    """
-    data = ms_get("/entity/uom", params={"limit": limit})
-    if not isinstance(data, dict):
-        return []
-    return data.get("rows", []) or []
-
-
-def find_uom_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
-    """
-    UOM meta topish:
-    - exact match
-    - contains (case-insensitive)
-    """
-    name = (name or "").strip()
-    if not name:
-        return None
-
-    rows = get_uoms(limit=2000)
-
-    for r in rows:
-        if (r.get("name") or "").strip() == name and r.get("meta"):
-            return r["meta"]
-
-    nlow = name.lower()
-    for r in rows:
-        if nlow in (r.get("name") or "").lower() and r.get("meta"):
-            return r["meta"]
-
-    return None
-
-
-def get_or_create_uom_meta(name: str) -> Optional[Dict[str, Any]]:
-    """
-    MoySklad UOM yaratish API'ni ishlatmaymiz (xavfsiz).
-    Faqat mavjud bo'lsa meta qaytaramiz.
-    """
-    return find_uom_meta_by_name(name)
-
-
 # ==================== PRODUCT FOLDERS ====================
 
 def get_product_folders(limit: int = 50) -> List[Dict[str, Any]]:
@@ -404,7 +404,7 @@ def create_product(
     productfolder_meta: Dict[str, Any],
     sale_price_uzs: int,
     price_type_meta: Optional[Dict[str, Any]] = None,
-    uom_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW: единица измерения (шт/кг/рулон)
+    uom_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW
 ) -> Dict[str, Any]:
     name = (name or "").strip()
     if not name:
@@ -437,8 +437,8 @@ def create_product(
         ],
     }
 
-    # ✅ UOM set (agar topilgan bo'lsa)
-    if isinstance(uom_meta, dict) and uom_meta:
+    # ✅ set UOM (Единица измерения)
+    if uom_meta:
         payload["uom"] = {"meta": uom_meta}
 
     return ms_post("/entity/product", payload)
@@ -541,7 +541,7 @@ def create_customerorder(
     description: str,
     sales_channel_meta: Optional[Dict[str, Any]] = None,
     positions: Optional[List[Dict[str, Any]]] = None,
-    store_meta: Optional[Dict[str, Any]] = None,  # ✅ NEW
+    store_meta: Optional[Dict[str, Any]] = None,
     vat_enabled: bool = False,
     vat_included: bool = False,
 ) -> Dict[str, Any]:
@@ -557,7 +557,7 @@ def create_customerorder(
     if sales_channel_meta:
         payload["salesChannel"] = {"meta": sales_channel_meta}
     if store_meta:
-        payload["store"] = {"meta": store_meta}  # ✅ Sklad
+        payload["store"] = {"meta": store_meta}
     if positions:
         payload["positions"] = positions
     return ms_post("/entity/customerorder", payload)
