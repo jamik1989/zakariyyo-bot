@@ -24,7 +24,7 @@ from ..services.moysklad import (
     get_product_folders,
     find_price_type_meta_by_name,
     find_store_meta_by_name,
-    get_or_create_uom_meta,  # ✅ NEW: UOM (шт/кг/рулон)
+    get_or_create_uom_meta,          # ✅ NEW
     create_product,
     attach_image_to_product,
     create_customerorder,
@@ -263,10 +263,6 @@ def _item_is_complete(it: Dict[str, Any]) -> bool:
 
 
 def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Batch bo'lsa, birinchi qo'shilgan item kanali LOCK bo'ladi.
-    Keyingi itemlar shu kanal bilan ketadi.
-    """
     batch = context.user_data.get("confirm_batch") or []
     if not batch:
         return None, ""
@@ -315,12 +311,30 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     )
 
 
+def _uom_meta_from_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    qty_unit_ru -> MoySklad UOM (Единица измерения) metasini topib beradi.
+    Agar topilmasa: None (hech narsa buzilmaydi)
+    """
+    u = (item.get("qty_unit_ru") or "").strip().lower()
+
+    # normalize
+    if u in ("шт", "штука", "штук"):
+        name = "шт"
+    elif u in ("кг", "килограмм", "килограм"):
+        name = "кг"
+    elif u in ("рулон", "рул"):
+        name = "рулон"
+    else:
+        return None
+
+    try:
+        return get_or_create_uom_meta(name)
+    except Exception:
+        return None
+
+
 async def on_channel_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Batch lock kanalidan boshqa kanal bosilganda:
-    - ogohlantirish chiqadi
-    - 'Davom etish' bosilsa, lock kanalni qo'yib davom etadi
-    """
     q = update.callback_query
     await q.answer()
     _ensure_confirm_data(context)
@@ -955,13 +969,6 @@ def _build_channel_caption(
     moment_iso: str,
     order_name: str,
 ) -> str:
-    """
-    Telegram kanal caption:
-    - Narx ko'rinmaydi (faqat MoySklad description'da qoladi)
-    - Q.M ko'rinadi
-    - Bo'sh qator YO'Q (ketma-ket)
-    - Tartib: Buyurtma -> Brand -> Item blok -> KL/OR/Vaqt/Sklad/MS
-    """
     unit_lat = (item.get("qty_unit_lat") or "").strip()
     qty_lat = f"{item.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
     qm = (item.get("qm_note") or "").strip()
@@ -1048,14 +1055,12 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not moment_iso:
         moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-    # items: batch + current
     items: List[Dict[str, Any]] = []
     batch = context.user_data.get("confirm_batch") or []
     if batch:
         items.extend(batch)
     items.append(_clone_item_for_batch(d))
 
-    # ✅ Kanal: batch lock bo'lsa, hammasi lock kanal
     locked_meta, locked_name = _get_locked_batch_channel(context)
     if locked_meta:
         sc_meta = locked_meta
@@ -1087,7 +1092,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not _item_is_complete(it):
                 raise RuntimeError("Batch ichida to‘liq bo‘lmagan buyurtma bor (rasm/maydonlar).")
 
-            # MoySklad description (Narx + Q.M shu yerda qoladi)
             unit_ru = (it.get("qty_unit_ru") or "").strip()
             qty_ru = f"{it.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
 
@@ -1098,20 +1102,18 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
             ])
 
-            # ✅ UOM (Единица измерения) — шт/кг/рулон
-            # unit_ru: "шт" / "кг" / "рулон" (parse_qty_and_unit shuni beradi)
-            uom_name = unit_ru if unit_ru else "шт"
-            uom_meta = get_or_create_uom_meta(uom_name)  # topilmasa yaratishga urinadi; bo'lmasa None
-
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
+
+            # ✅ UOM meta (шт/кг/рулон) topamiz, topilmasa None (buzmaydi)
+            uom_meta = _uom_meta_from_item(it)
 
             prod = create_product(
                 name=product_name,
                 productfolder_meta=it.get("group_meta"),
                 sale_price_uzs=int(it.get("price_uzs")),
                 price_type_meta=pt_meta,
-                uom_meta=uom_meta,  # ✅ NEW: unit MoySklad product kartasida chiqadi
+                uom_meta=uom_meta,   # ✅ NEW
             )
             prod_id = str(prod.get("id") or "")
             prod_meta = prod.get("meta")
@@ -1146,7 +1148,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             created_orders.append(order)
 
-            # Telegram kanalga: Narx chiqmaydi, Q.M chiqadi
             if CONFIRM_CHAT_ID:
                 caption = _build_channel_caption(
                     idx=idx,
