@@ -24,7 +24,7 @@ from ..services.moysklad import (
     get_product_folders,
     find_price_type_meta_by_name,
     find_store_meta_by_name,
-    get_or_create_uom_meta,  # ✅ NEW
+    get_or_create_uom_meta,  # ✅ UOM (шт/кг/рулон)
     create_product,
     attach_image_to_product,
     create_customerorder,
@@ -52,13 +52,22 @@ from ..services.moysklad import (
     CF_REVIEW,
     CF_EDIT_CHOOSE,
     CF_EDIT_VALUE,
-    CF_TIME,  # ✅ time edit
+    CF_TIME,
 ) = range(19)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
+# Sizning bot ishlaydigan TZ (moment default)
 TZ = ZoneInfo("Asia/Tashkent")
+
+# ✅ MoySklad UI vaqtiga mos chiqarish uchun:
+# MoySklad API'ga yuboriladigan "moment" odatda timezone'siz ketadi.
+# MoySklad uni o'z account TZ'si deb qabul qiladi (ko'p holatda Europe/Moscow).
+# Telegramda esa Toshkentda ko'rinishi uchun TG_TZ ga konvert qilamiz.
+MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
+TG_TZ = ZoneInfo(os.getenv("TG_TZ", "Asia/Tashkent"))
+
 GROUPS_PAGE_SIZE = 10
 
 ALLOWED_GROUPS = [
@@ -268,6 +277,27 @@ def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
         return None, ""
     first = batch[0] or {}
     return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
+
+
+def _fmt_moysklad_moment_for_tg(moment_iso: str) -> str:
+    """
+    MoySklad API'ga yuboriladigan moment_iso timezone'siz bo'ladi.
+    MoySklad uni MS_TZ deb qabul qiladi (default Europe/Moscow).
+    Telegramda esa TG_TZ (default Asia/Tashkent) ga konvert qilib,
+    UI dagi ko'rinishga yaqin formatda chiqaramiz: DD.MM.YYYY HH:MM
+    """
+    if not moment_iso:
+        return ""
+
+    s = (moment_iso or "").strip()
+
+    try:
+        dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return s
+
+    dt = dt.replace(tzinfo=MS_TZ).astimezone(TG_TZ)
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
 def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -481,7 +511,6 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_PICK
 
 
-# ✅ app/main.py shu funksiyani import qilgani uchun SHART:
 async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -932,10 +961,7 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["price_uzs"] = price
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text(
-        _render_review(context),
-        reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
-    )
+    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
     return CF_REVIEW
 
 
@@ -955,6 +981,9 @@ def _build_channel_caption(
     qm = (item.get("qm_note") or "").strip()
     qm_show = qm if qm else "-"
 
+    # ✅ Telegramdagi vaqtni MoySklad UI ko'rinishiga moslab chiqaramiz
+    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
+
     return "\n".join([
         f"📦 Buyurtma: {idx}/{total}",
         f"🏷 B: {brand}",
@@ -966,7 +995,7 @@ def _build_channel_caption(
         f"📝 Q.M: {qm_show}",
         f"📊 KL: {sc_name}",
         f"👨‍💼 OR: {operator_name}",
-        f"🕒 Vaqt: {moment_iso}",
+        f"🕒 Vaqt: {moment_show}",
         f"🏬 Sklad: {CONFIRM_STORE_NAME}",
         f"🧾 MS: {order_name}",
     ])
@@ -1086,7 +1115,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
-            # ✅ NEW: UOM meta (шт/кг/рулон) ni productga qo'yamiz
+            # ✅ UOM meta (шт/кг/рулон) ni productga qo'yamiz
             uom_meta = get_or_create_uom_meta(unit_ru) if unit_ru else None
 
             prod = create_product(
@@ -1130,7 +1159,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             created_orders.append(order)
 
-            # Telegram kanalga: Narx chiqmaydi, Q.M chiqadi
             if CONFIRM_CHAT_ID:
                 caption = _build_channel_caption(
                     idx=idx,
@@ -1180,10 +1208,7 @@ async def on_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d = context.user_data["confirm_data"]
         d["moment_iso_override"] = moment
         context.user_data["confirm_data"] = d
-        await update.message.reply_text(
-            _render_review(context),
-            reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
-        )
+        await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
         return CF_REVIEW
 
     try:
@@ -1201,10 +1226,7 @@ async def on_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["moment_iso_override"] = moment
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text(
-        _render_review(context),
-        reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
-    )
+    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
     return CF_REVIEW
 
 
@@ -1215,10 +1237,7 @@ async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     key = (q.data or "").split("cfe:", 1)[-1]
     if key == "back":
-        await q.edit_message_text(
-            _render_review(context),
-            reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
-        )
+        await q.edit_message_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
         return CF_REVIEW
 
     if key not in ("brand", "item", "size", "bg", "text", "qm", "qty", "channel"):
@@ -1301,10 +1320,7 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["confirm_data"] = d
     context.user_data.pop("edit_key", None)
 
-    await update.message.reply_text(
-        _render_review(context),
-        reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
-    )
+    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
     return CF_REVIEW
 
 
