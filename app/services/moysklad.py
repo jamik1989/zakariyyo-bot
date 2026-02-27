@@ -161,14 +161,120 @@ def find_counterparty_by_phone(phone: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    q = (query or "").strip()
-    if not q:
-        return []
-    data = ms_get("/entity/counterparty", params={"search": q, "limit": limit})
+def _dedupe_rows_by_id(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        cid = str(r.get("id") or "")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        out.append(r)
+    return out
+
+
+def _counterparty_page(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    data = ms_get("/entity/counterparty", params=params)
     if not isinstance(data, dict):
         return []
     return data.get("rows", []) or []
+
+
+def _search_counterparties_paged(
+    *,
+    filter_expr: Optional[str] = None,
+    search_expr: Optional[str] = None,
+    limit: int = 50,
+    max_total: int = 200,
+) -> List[Dict[str, Any]]:
+    """
+    Pagination bilan counterparty yig'ish.
+    - max_total: jami nechta rowgacha yig'ish
+    """
+    limit = max(1, min(int(limit), 1000))
+    max_total = max(1, int(max_total))
+
+    all_rows: List[Dict[str, Any]] = []
+    offset = 0
+
+    while len(all_rows) < max_total:
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if filter_expr:
+            params["filter"] = filter_expr
+        if search_expr:
+            params["search"] = search_expr
+
+        try:
+            chunk = _counterparty_page(params)
+        except Exception as e:
+            logger.warning("Counterparty paged search failed: %s", e)
+            break
+
+        if not chunk:
+            break
+
+        all_rows.extend(chunk)
+        if len(chunk) < limit:
+            break
+
+        offset += limit
+
+    return _dedupe_rows_by_id(all_rows)[:max_total]
+
+
+def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    ✅ Kuchaytirilgan qidiruv:
+    - 2 ta harf/raqam bo'lsa ham ishlaydi
+    - qisqa query uchun filter=name~ / phone~ ishlatadi
+    - uzun query uchun avvalgidek search= ishlatadi
+    - pagination bilan ko'proq chiqaradi
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    # limit "UI uchun" bo'lib qoladi, lekin ichkarida ko'proq yig'ib,
+    # keyin limit bo'yicha qaytaramiz (to'liq ro'yxat kerak bo'lsa confirm.py ichida limitni kattaroq beramiz).
+    ui_limit = max(1, int(limit))
+
+    # raqam bo'lsa phone bo'yicha qidiramiz
+    digits = _norm_phone_digits(q)
+
+    # 2 ta belgida ham ishlasin
+    if len(q) <= 2:
+        if digits:
+            rows = _search_counterparties_paged(
+                filter_expr=f"phone~{digits}",
+                limit=50,
+                max_total=max(ui_limit, 200),
+            )
+            return rows[:ui_limit]
+        rows = _search_counterparties_paged(
+            filter_expr=f"name~{q}",
+            limit=50,
+            max_total=max(ui_limit, 200),
+        )
+        return rows[:ui_limit]
+
+    # 3+ belgida:
+    # agar raqam bo'lsa phone filter ham sinab ko'ramiz (search ba'zan phone'ni yomon topadi)
+    if digits and len(digits) >= 2:
+        rows = _search_counterparties_paged(
+            filter_expr=f"phone~{digits}",
+            limit=50,
+            max_total=max(ui_limit, 200),
+        )
+        if rows:
+            return rows[:ui_limit]
+
+    # default: search
+    rows = _search_counterparties_paged(
+        search_expr=q,
+        limit=50,
+        max_total=max(ui_limit, 200),
+    )
+    return rows[:ui_limit]
 
 
 def get_or_create_counterparty(name: str, phone: Optional[str] = None) -> Dict[str, Any]:
