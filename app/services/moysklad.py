@@ -511,6 +511,12 @@ def get_or_create_uom_meta(unit_ru: str) -> Optional[Dict[str, Any]]:
         "рулон": "рулон",
         "rulon": "рулон",
         "roll": "рулон",
+        # ✅ meter
+        "м": "м",
+        "metr": "м",
+        "meter": "м",
+        "metre": "м",
+        "m": "м",
     }
     key = unit_ru.lower()
     norm = mapping.get(key, unit_ru)
