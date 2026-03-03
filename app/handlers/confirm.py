@@ -29,6 +29,7 @@ from ..services.moysklad import (
     attach_image_to_product,
     create_customerorder,
     attach_file_to_customerorder,
+    attach_image_to_customerorder,  # ✅ NEW: order images (UI: "Изображение")
     get_or_create_counterparty,
     search_counterparties,
 )
@@ -189,7 +190,8 @@ def _parse_qty_and_unit(text: str) -> Tuple[Optional[int], str, str]:
 
     qty = int(num)
 
-    if unit in ("sht", "sh", "шт", "sht.", "sh."):
+    # ✅ sht + dona => шт
+    if unit in ("sht", "sh", "шт", "sht.", "sh.", "dona", "dona."):
         return qty, "sht", "шт"
     if unit in ("rulon", "рулон", "rul", "rul."):
         return qty, "rulon", "рулон"
@@ -1151,9 +1153,15 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             order_id = str(order.get("id") or "")
 
+            # ✅ rasm MoySklad'da: Files ham, Images ham (UI: "Изображение")
             if order_id:
                 try:
                     attach_file_to_customerorder(order_id, it.get("image_path"))
+                except Exception:
+                    pass
+
+                try:
+                    attach_image_to_customerorder(order_id, it.get("image_path"))
                 except Exception:
                     pass
 
