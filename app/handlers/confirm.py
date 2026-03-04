@@ -312,9 +312,11 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     if unit_lat:
         qty_show = f"{qty_show} {unit_lat}"
 
-    moment = (d.get("moment_iso_override") or "").strip()
-    if not moment:
-        moment = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    moment_iso = (d.get("moment_iso_override") or "").strip()
+    if not moment_iso:
+        dt_tg = datetime.now(TG_TZ)
+        dt_ms = dt_tg.astimezone(MS_TZ)
+        moment_iso = dt_ms.strftime("%Y-%m-%d %H:%M:%S")
 
     batch = context.user_data.get("confirm_batch") or []
     batch_info = f"📦 Batch: {len(batch) + 1} ta buyurtma (yig‘ilmoqda)\n\n" if batch else ""
@@ -1289,23 +1291,23 @@ async def on_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip().lower()
 
     if txt == "now":
-        moment = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+        dt_tg = datetime.now(TG_TZ)
+        dt_ms = dt_tg.astimezone(MS_TZ)
+        moment = dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+        
         d = context.user_data["confirm_data"]
         d["moment_iso_override"] = moment
-        context.user_data["confirm_data"] = d
-        await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
-        return CF_REVIEW
 
     try:
         dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
-        dt = dt.replace(tzinfo=TZ)
-        moment = dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        await update.message.reply_text(
-            "❌ Format noto‘g‘ri.\n"
-            "To‘g‘ri: 2026-02-18 21:30 yoki 'now'"
-        )
-        return CF_TIME
+
+        # ✅ foydalanuvchi kiritgan vaqt Telegram TZ deb olinadi
+        dt_tg = dt.replace(tzinfo=TG_TZ)
+
+        # ✅ MoySklad TZ ga o‘tkazamiz
+        dt_ms = dt_tg.astimezone(MS_TZ)
+
+        moment = dt_ms.strftime("%Y-%m-%d %H:%M:%S")
 
     d = context.user_data["confirm_data"]
     d["moment_iso_override"] = moment
