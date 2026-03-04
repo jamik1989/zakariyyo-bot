@@ -333,6 +333,7 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv bo‘sh. Yozing.")
         return STEP_CP_SEARCH
 
+    # ✅ Format bilan yaratish ham shu joyda ishlaydi (1 oqim)
     triple = _parse_brand_name_phone(q)
     if triple:
         brand, client_name, phone_plus = triple
@@ -343,7 +344,6 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         pt = context.user_data.get("paytype")
         if pt == "card":
-            # 3/7
             await update.message.reply_text(
                 "🧾 *Kiritish — 3/7*\n"
                 "━━━━━━━━━━━━━━\n"
@@ -358,7 +358,6 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["time_hms"] = None
         context.user_data.pop("sales_channel_meta", None)
 
-        # 4/7
         await update.message.reply_text(
             "🧾 *Kiritish — 4/7*\n"
             "━━━━━━━━━━━━━━\n"
@@ -368,15 +367,29 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STEP_AMOUNT_DATE
 
     # normal search
-    rows = _search_counterparties(q, limit=10)
-    context.user_data["cp_candidates"] = {r["id"]: r for r in rows if r.get("id")}
+    context.user_data["cp_last_q"] = q
+    rows = _search_counterparties(q, limit=10) or []
+    context.user_data["cp_candidates"] = {str(r.get("id")): r for r in rows if r.get("id")}
 
     kb = []
     for r in rows[:10]:
         rid = r.get("id")
         if rid:
             kb.append([InlineKeyboardButton(_cp_title(r), callback_data=f"cp:{rid}")])
-    kb.append([InlineKeyboardButton("➕ Yangi kontragent yaratish", callback_data=f"cpnew:{q}")])
+
+    # ✅ Bitta tugma: topilmasa ham yaratish
+    context.user_data["cp_new_text"] = q
+    kb.append([InlineKeyboardButton("➕ Topilmasa yaratish", callback_data="cpnew:1")])
+
+    if not rows:
+        await update.message.reply_text(
+            "❌ Kontragent topilmadi.\n\n"
+            "➕ Yangi yaratish uchun pastdagi tugmani bosing yoki format yuboring:\n"
+            "BRAND-MijozNomi-910175253\n"
+            "Masalan: LEAP-Akmal-910175253",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+        return STEP_CP_PICK
 
     await update.message.reply_text(
         "🧾 *Kiritish — 3/7*\n"
@@ -387,13 +400,26 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return STEP_CP_PICK
 
-
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    cp_id = (query.data or "").split("cp:", 1)[-1]
-    cand = (context.user_data.get("cp_candidates") or {}).get(cp_id)
+    cp_id = (query.data or "").split("cp:", 1)[-1].strip()
+    cand = (context.user_data.get("cp_candidates") or {}).get(str(cp_id))
+
+    # ✅ Ba’zan candidate map yo‘qolib qoladi: last_q bilan qayta qidirib topamiz
+    if not cand:
+        last_q = (context.user_data.get("cp_last_q") or "").strip()
+        if last_q:
+            try:
+                rows = _search_counterparties(last_q, limit=20) or []
+                for r in rows:
+                    if str(r.get("id")) == str(cp_id):
+                        cand = r
+                        break
+            except Exception:
+                cand = None
+
     if not cand:
         await query.edit_message_text("❌ Kontragent topilmadi. Qaytadan /kiritish qiling.", reply_markup=None)
         return ConversationHandler.END
@@ -424,12 +450,14 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return STEP_AMOUNT_DATE
 
-
 async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    raw = (query.data or "").split("cpnew:", 1)[-1].strip()
+    raw = (context.user_data.get("cp_new_text") or "").strip()
+    if not raw:
+        raw = (query.data or "").split("cpnew:", 1)[-1].strip()
+
     phone_plus = ""
     digits = _digits_only(raw)
     if len(digits) >= 7:
@@ -462,7 +490,6 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return STEP_AMOUNT_DATE
-
 
 async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

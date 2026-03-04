@@ -205,7 +205,7 @@ def build_app() -> Application:
         entry_points=[CommandHandler("tasdiq", tasdiq_start)],
         states={
             CF_PICK: [
-                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:(search|format)$"),
+                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
 

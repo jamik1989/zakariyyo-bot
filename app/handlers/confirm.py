@@ -17,7 +17,7 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import CONFIRM_CHAT_ID
-from ..db import list_open_confirms, get_confirm, mark_confirm_done, create_confirm
+from ..db import list_open_confirms, search_open_confirms, get_confirm, mark_confirm_done, create_confirm
 from ..services.moysklad import (
     get_default_organization,
     get_sales_channels,
@@ -498,45 +498,43 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = list_open_confirms(op_id, limit=50)
 
     kb = [
-        [InlineKeyboardButton("🔎 Qidirib yangi tasdiq yaratish", callback_data="cfnew:search")],
-        [InlineKeyboardButton("➕ Format bilan yaratish", callback_data="cfnew:format")],
+        [InlineKeyboardButton("🔎 Qidirish / Yaratish (1 tugma)", callback_data="cfnew:smart")],
     ]
     if rows:
         for r in rows:
             title = f"{r.get('brand','')} | {r.get('phone_plus','')}".strip()
-            kb.append([InlineKeyboardButton(title, callback_data=f"cfpick:{r['id']}")])
+            kb.append([InlineKeyboardButton(title[:64], callback_data=f"cfpick:{r['id']}")])
 
     await update.message.reply_text(
-        "✅ Tasdiqlash: qaysi buyurtmani yuboramiz?",
+        "✅ Tasdiqlash: qaysi buyurtmani yuboramiz?\n\n"
+        "Yangi tasdiq uchun bitta tugma orqali qidiring yoki format yuboring.",
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return CF_PICK
-
 
 async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    mode = (q.data or "").split("cfnew:", 1)[-1]
-
-    if mode == "search":
-        await q.edit_message_text(
-            "🔎 Qidirish: brend/mijoz/telefon yozing (LEAP / Akmal / 910175253)\n"
-            "Masalan: LEAP yoki Akmal yoki 910175253"
-        )
-        return CF_CP_SEARCH
-
+    # Bitta tugma: qidirish ham, format bilan yaratish ham shu yerda
     await q.edit_message_text(
-        "🆕 Yangi tasdiq yaratish (format)\n\n"
-        "Format: BRAND-MijozNomi-910175253\n"
+        "🔎 Qidirish / Yaratish\n\n"
+        "Brend yoki mijoz yoki telefon yozing (MoySklad bo‘lsa chiqadi).\n"
+        "Agar topilmasa — shu formatda yuborsangiz darrov yaratadi:\n"
+        "BRAND-MijozNomi-910175253\n"
         "Masalan: LEAP-Akmal-910175253"
     )
-    return CF_NEW_CLICK
-
+    return CF_CP_SEARCH
 
 async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
         await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
+        return ConversationHandler.END
+
+    op = context.user_data["operator"]
+    op_id = int(op.get("id") or 0)
+    if not op_id:
+        await update.message.reply_text("❌ Operator ID topilmadi. Qayta /login qiling.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
     qtxt = (update.message.text or "").strip()
@@ -544,19 +542,83 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv matni bo‘sh.")
         return CF_CP_SEARCH
 
+    # ✅ 1) Agar format bo‘lsa — darrov yaratamiz (qidiruv ham, yaratish ham shu joyda)
+    triple = _parse_brand_client_phone(qtxt)
+    if triple:
+        brand, client_name, phone_plus = triple
+        cp = get_or_create_counterparty(name=client_name, phone=phone_plus)
+        confirm_id = create_confirm(
+            operator_id=op_id,
+            brand=brand,
+            client_name=cp.get("name") or client_name,
+            phone_plus=_normalize_phone_uz(cp.get("phone") or phone_plus),
+            counterparty_meta=cp.get("meta") or {},
+        )
+        context.user_data["confirm_id"] = int(confirm_id)
+
+        context.user_data["confirm_data"] = {
+            "brand": brand,
+            "client_name": (cp.get("name") or client_name).strip(),
+            "phone_plus": _normalize_phone_uz(cp.get("phone") or phone_plus),
+            "counterparty_meta": cp.get("meta") or {},
+            "image_path": "",
+            "item_type": "",
+            "size": "",
+            "bg_color": "",
+            "text_color": "",
+            "qm_note": "",
+            "qty": None,
+            "qty_unit_lat": "",
+            "qty_unit_ru": "",
+            "price_uzs": None,
+            "sales_channel_meta": None,
+            "sales_channel_name": "",
+            "group_meta": None,
+            "group_name": "",
+            "moment_iso_override": "",
+        }
+
+        await update.message.reply_text(
+            f"✅ Yangi tasdiq yaratildi: *{brand}*\n\n🖼 Buyurtma rasmini yuboring (Photo yoki File).",
+            parse_mode="Markdown",
+        )
+        return CF_PHOTO
+
+    # ✅ 2) Qidirish: avval OPEN tasdiqlar ichidan, keyin MoySklad kontragentlaridan
+    context.user_data["cf_last_q"] = qtxt
+
+    try:
+        open_hits = search_open_confirms(op_id, qtxt, limit=10) or []
+    except Exception:
+        open_hits = []
+
     try:
         rows = search_counterparties(qtxt, limit=20) or []
     except Exception as e:
         await update.message.reply_text(f"❌ Qidiruvda xatolik: {e}")
         return CF_CP_SEARCH
 
-    if not rows:
-        await update.message.reply_text("❌ Topilmadi. Boshqa so‘z bilan urinib ko‘ring.")
+    if not rows and not open_hits:
+        await update.message.reply_text(
+            "❌ Hech narsa topilmadi.\n\n"
+            "✅ Yangi yaratish uchun shu formatni yuboring:\n"
+            "BRAND-MijozNomi-910175253\n"
+            "Masalan: LEAP-Akmal-910175253"
+        )
         return CF_CP_SEARCH
 
     mp: Dict[str, Dict[str, Any]] = {}
     kb: List[List[InlineKeyboardButton]] = []
 
+    # OPEN tasdiqlar
+    for r in open_hits:
+        cid = int(r.get("id") or 0)
+        if not cid:
+            continue
+        title = f"{(r.get('brand') or '').strip()} | {(r.get('client_name') or '').strip()} | {(r.get('phone_plus') or '').strip()}"
+        kb.append([InlineKeyboardButton(("✅ " + title).strip()[:64], callback_data=f"cfpick:{cid}")])
+
+    # MoySklad kontragentlar
     for r in rows:
         cid = str(r.get("id") or "")
         if not cid:
@@ -565,17 +627,18 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = (r.get("phone") or "").strip()
         title = f"{name} ({phone})" if phone else name
         mp[cid] = r
-        kb.append([InlineKeyboardButton(title, callback_data=f"cfcp:{cid}")])
+        kb.append([InlineKeyboardButton(title[:64], callback_data=f"cfcp:{cid}")])
 
     kb.append([InlineKeyboardButton("➕ Yangi kontragent yaratish", callback_data="cfcp:new")])
 
     context.user_data["cf_cp_map"] = mp
     await update.message.reply_text(
-        "Topilgan kontragentlar:\nTanlang:",
+        "Natijalar:\n"
+        "— Agar ✅ OPEN tasdiq chiqsa, o‘shani tanlang.\n"
+        "— Aks holda kontragentni tanlang.",
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return CF_CP_PICK
-
 
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -588,13 +651,27 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "BRAND-MijozNomi-910175253\n"
             "Masalan: LEAP-Akmal-910175253"
         )
-        return CF_NEW_CLICK
+        return CF_CP_SEARCH
 
-    cid = data.split("cfcp:", 1)[-1]
+    cid = data.split("cfcp:", 1)[-1].strip()
     mp = context.user_data.get("cf_cp_map") or {}
-    cp = mp.get(cid)
+    cp = mp.get(str(cid))
+
+    # ✅ Ba'zan user_data map yo‘qolib qoladi: qayta qidirib id bo‘yicha topib olamiz
     if not cp:
-        await q.edit_message_text("❌ Topilmadi. Qaytadan qidiring.")
+        last_q = (context.user_data.get("cf_last_q") or "").strip()
+        if last_q:
+            try:
+                rows = search_counterparties(last_q, limit=50) or []
+                for r in rows:
+                    if str(r.get("id") or "") == str(cid):
+                        cp = r
+                        break
+            except Exception:
+                cp = None
+
+    if not cp:
+        await q.edit_message_text("❌ Kontragent topilmadi. Qaytadan qidirib ko‘ring.")
         return CF_CP_SEARCH
 
     context.user_data["confirm_data"] = {
@@ -618,11 +695,11 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "group_name": "",
         "moment_iso_override": "",
     }
-    context.user_data["cf_brand_only"] = True
 
+    # Brend so‘raymiz
+    context.user_data["cf_brand_only"] = True
     await q.edit_message_text("🏷 Brend nomini yozing. Masalan: LEAP")
     return CF_BRAND_ONLY
-
 
 async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
