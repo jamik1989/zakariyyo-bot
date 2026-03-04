@@ -333,3 +333,37 @@ def delete_operator_by_phone(phone: str) -> bool:
     deleted = cur.rowcount > 0
     conn.close()
     return deleted
+def search_open_confirms(operator_id: int, q: str, limit: int = 20):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    like = f"%{q.lower()}%"
+
+    cur.execute("""
+        SELECT id, brand, client_name, phone_plus, counterparty_meta, created_at
+        FROM confirms
+        WHERE operator_id=? AND status='OPEN'
+        AND (
+            LOWER(COALESCE(brand,'')) LIKE ?
+            OR LOWER(COALESCE(client_name,'')) LIKE ?
+            OR LOWER(COALESCE(phone_plus,'')) LIKE ?
+        )
+        ORDER BY id DESC
+        LIMIT ?
+    """, (operator_id, like, like, like, limit))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    result = []
+    for r in rows:
+        result.append({
+            "id": r[0],
+            "brand": r[1],
+            "client_name": r[2],
+            "phone_plus": r[3],
+            "counterparty_meta": r[4],
+            "created_at": r[5]
+        })
+
+    return result
