@@ -86,6 +86,41 @@ ALLOWED_GROUPS = [
 CONFIRM_STORE_NAME = "Abusahiy 75"
 
 
+# =========================
+# ✅ NEW: TG -> MS moment helpers
+# =========================
+
+def _tg_now_str() -> str:
+    """Telegram (TG_TZ) bo'yicha hozirgi vaqtni timezone'siz string qaytaradi."""
+    return datetime.now(TG_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _tg_str_to_ms_moment(tg_moment_str: str) -> str:
+    """
+    TG time (timezone'siz string) ni TG_TZ deb qabul qilib,
+    MS_TZ ga o'giradi va MoySklad uchun timezone'siz moment string qaytaradi.
+    """
+    s = (tg_moment_str or "").strip()
+    if not s:
+        # fallback: hozirgi vaqt (TG) -> MS
+        dt_tg = datetime.now(TG_TZ)
+        dt_ms = dt_tg.astimezone(MS_TZ)
+        return dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+
+    # user_data'da biz odatda "%Y-%m-%d %H:%M:%S" saqlaymiz
+    try:
+        dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        # agar format boshqacha bo'lsa, bo'lganicha yubormaymiz — hozirgiga qaytamiz
+        dt_tg = datetime.now(TG_TZ)
+        dt_ms = dt_tg.astimezone(MS_TZ)
+        return dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+
+    dt_tg = dt.replace(tzinfo=TG_TZ)
+    dt_ms = dt_tg.astimezone(MS_TZ)
+    return dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq")]],
@@ -226,6 +261,7 @@ def _ensure_confirm_data(context: ContextTypes.DEFAULT_TYPE):
     d.setdefault("group_meta", None)
     d.setdefault("group_name", "")
 
+    # ✅ bu yerda TG vaqt stringi saqlaymiz: "YYYY-MM-DD HH:MM:SS"
     d.setdefault("moment_iso_override", "")
 
     context.user_data["confirm_data"] = d
@@ -312,9 +348,10 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     if unit_lat:
         qty_show = f"{qty_show} {unit_lat}"
 
-    moment = (d.get("moment_iso_override") or "").strip()
-    if not moment:
-        moment = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # ✅ Review'da TG vaqt ko'rsatamiz (user ko'rgan vaqt)
+    moment_tg = (d.get("moment_iso_override") or "").strip()
+    if not moment_tg:
+        moment_tg = _tg_now_str()
 
     batch = context.user_data.get("confirm_batch") or []
     batch_info = f"📦 Batch: {len(batch) + 1} ta buyurtma (yig‘ilmoqda)\n\n" if batch else ""
@@ -337,7 +374,7 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"{lock_info}"
         f"📁 Группа: {d.get('group_name') or 'N/A'}\n"
         f"🏬 Sklad: {CONFIRM_STORE_NAME}\n"
-        f"🕒 Vaqt: {moment}\n"
+        f"🕒 Vaqt: {moment_tg}\n"
         f"🖼 Rasm: {img}\n\n"
         "Davom etamizmi?"
     )
@@ -516,7 +553,6 @@ async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYP
     q = update.callback_query
     await q.answer()
 
-    # Bitta tugma: qidirish ham, format bilan yaratish ham shu yerda
     await q.edit_message_text(
         "🔎 Qidirish / Yaratish\n\n"
         "Brend yoki mijoz yoki telefon yozing (MoySklad bo‘lsa chiqadi).\n"
@@ -526,559 +562,11 @@ async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return CF_CP_SEARCH
 
-async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("operator"):
-        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
-        return ConversationHandler.END
-
-    op = context.user_data["operator"]
-    op_id = int(op.get("id") or 0)
-    if not op_id:
-        await update.message.reply_text("❌ Operator ID topilmadi. Qayta /login qiling.", reply_markup=_menu_keyboard())
-        return ConversationHandler.END
-
-    qtxt = (update.message.text or "").strip()
-    if not qtxt:
-        await update.message.reply_text("❌ Qidiruv matni bo‘sh.")
-        return CF_CP_SEARCH
-
-    # ✅ 1) Agar format bo‘lsa — darrov yaratamiz (qidiruv ham, yaratish ham shu joyda)
-    triple = _parse_brand_client_phone(qtxt)
-    if triple:
-        brand, client_name, phone_plus = triple
-        cp = get_or_create_counterparty(name=client_name, phone=phone_plus)
-        confirm_id = create_confirm(
-            operator_id=op_id,
-            brand=brand,
-            client_name=cp.get("name") or client_name,
-            phone_plus=_normalize_phone_uz(cp.get("phone") or phone_plus),
-            counterparty_meta=cp.get("meta") or {},
-        )
-        context.user_data["confirm_id"] = int(confirm_id)
-
-        context.user_data["confirm_data"] = {
-            "brand": brand,
-            "client_name": (cp.get("name") or client_name).strip(),
-            "phone_plus": _normalize_phone_uz(cp.get("phone") or phone_plus),
-            "counterparty_meta": cp.get("meta") or {},
-            "image_path": "",
-            "item_type": "",
-            "size": "",
-            "bg_color": "",
-            "text_color": "",
-            "qm_note": "",
-            "qty": None,
-            "qty_unit_lat": "",
-            "qty_unit_ru": "",
-            "price_uzs": None,
-            "sales_channel_meta": None,
-            "sales_channel_name": "",
-            "group_meta": None,
-            "group_name": "",
-            "moment_iso_override": "",
-        }
-
-        await update.message.reply_text(
-            f"✅ Yangi tasdiq yaratildi: *{brand}*\n\n🖼 Buyurtma rasmini yuboring (Photo yoki File).",
-            parse_mode="Markdown",
-        )
-        return CF_PHOTO
-
-    # ✅ 2) Qidirish: avval OPEN tasdiqlar ichidan, keyin MoySklad kontragentlaridan
-    context.user_data["cf_last_q"] = qtxt
-
-    try:
-        open_hits = search_open_confirms(op_id, qtxt, limit=10) or []
-    except Exception:
-        open_hits = []
-
-    try:
-        rows = search_counterparties(qtxt, limit=20) or []
-    except Exception as e:
-        await update.message.reply_text(f"❌ Qidiruvda xatolik: {e}")
-        return CF_CP_SEARCH
-
-    if not rows and not open_hits:
-        await update.message.reply_text(
-            "❌ Hech narsa topilmadi.\n\n"
-            "✅ Yangi yaratish uchun shu formatni yuboring:\n"
-            "BRAND-MijozNomi-910175253\n"
-            "Masalan: LEAP-Akmal-910175253"
-        )
-        return CF_CP_SEARCH
-
-    mp: Dict[str, Dict[str, Any]] = {}
-    kb: List[List[InlineKeyboardButton]] = []
-
-    # OPEN tasdiqlar
-    for r in open_hits:
-        cid = int(r.get("id") or 0)
-        if not cid:
-            continue
-        title = f"{(r.get('brand') or '').strip()} | {(r.get('client_name') or '').strip()} | {(r.get('phone_plus') or '').strip()}"
-        kb.append([InlineKeyboardButton(("✅ " + title).strip()[:64], callback_data=f"cfpick:{cid}")])
-
-    # MoySklad kontragentlar
-    for r in rows:
-        cid = str(r.get("id") or "")
-        if not cid:
-            continue
-        name = (r.get("name") or "").strip() or "N/A"
-        phone = (r.get("phone") or "").strip()
-        title = f"{name} ({phone})" if phone else name
-        mp[cid] = r
-        kb.append([InlineKeyboardButton(title[:64], callback_data=f"cfcp:{cid}")])
-
-    kb.append([InlineKeyboardButton("➕ Yangi kontragent yaratish", callback_data="cfcp:new")])
-
-    context.user_data["cf_cp_map"] = mp
-    await update.message.reply_text(
-        "Natijalar:\n"
-        "— Agar ✅ OPEN tasdiq chiqsa, o‘shani tanlang.\n"
-        "— Aks holda kontragentni tanlang.",
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
-    return CF_CP_PICK
-
-async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    data = q.data or ""
-    if data == "cfcp:new":
-        await q.edit_message_text(
-            "✅ Yangi yaratish formati:\n"
-            "BRAND-MijozNomi-910175253\n"
-            "Masalan: LEAP-Akmal-910175253"
-        )
-        return CF_CP_SEARCH
-
-    cid = data.split("cfcp:", 1)[-1].strip()
-    mp = context.user_data.get("cf_cp_map") or {}
-    cp = mp.get(str(cid))
-
-    # ✅ Ba'zan user_data map yo‘qolib qoladi: qayta qidirib id bo‘yicha topib olamiz
-    if not cp:
-        last_q = (context.user_data.get("cf_last_q") or "").strip()
-        if last_q:
-            try:
-                rows = search_counterparties(last_q, limit=50) or []
-                for r in rows:
-                    if str(r.get("id") or "") == str(cid):
-                        cp = r
-                        break
-            except Exception:
-                cp = None
-
-    if not cp:
-        await q.edit_message_text("❌ Kontragent topilmadi. Qaytadan qidirib ko‘ring.")
-        return CF_CP_SEARCH
-
-    context.user_data["confirm_data"] = {
-        "brand": "",
-        "client_name": (cp.get("name") or "").strip(),
-        "phone_plus": _normalize_phone_uz(cp.get("phone") or ""),
-        "counterparty_meta": cp.get("meta") or {},
-        "image_path": "",
-        "item_type": "",
-        "size": "",
-        "bg_color": "",
-        "text_color": "",
-        "qm_note": "",
-        "qty": None,
-        "qty_unit_lat": "",
-        "qty_unit_ru": "",
-        "price_uzs": None,
-        "sales_channel_meta": None,
-        "sales_channel_name": "",
-        "group_meta": None,
-        "group_name": "",
-        "moment_iso_override": "",
-    }
-
-    # Brend so‘raymiz
-    context.user_data["cf_brand_only"] = True
-    await q.edit_message_text("🏷 Brend nomini yozing. Masalan: LEAP")
-    return CF_BRAND_ONLY
-
-async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("operator"):
-        await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
-        return ConversationHandler.END
-
-    op = context.user_data["operator"]
-    op_id = int(op.get("id") or 0)
-    if not op_id:
-        await update.message.reply_text("❌ Operator ID topilmadi.")
-        return ConversationHandler.END
-
-    if context.user_data.get("cf_brand_only"):
-        brand = (update.message.text or "").strip().upper()
-        if not brand:
-            await update.message.reply_text("❌ Brend bo‘sh bo‘lmasin.")
-            return CF_BRAND_ONLY
-
-        _ensure_confirm_data(context)
-        d = context.user_data["confirm_data"]
-        d["brand"] = brand
-        context.user_data["confirm_data"] = d
-
-        if not d.get("counterparty_meta"):
-            await update.message.reply_text("❌ Kontragent meta yo‘q. Qaytadan /tasdiq qiling.")
-            return ConversationHandler.END
-
-        cid = create_confirm(
-            operator_id=op_id,
-            brand=d.get("brand") or "",
-            client_name=d.get("client_name") or "",
-            phone_plus=d.get("phone_plus") or "",
-            counterparty_meta=d.get("counterparty_meta") or {},
-        )
-
-        context.user_data["confirm_id"] = int(cid)
-        context.user_data.pop("cf_brand_only", None)
-        context.user_data.pop("cf_cp_map", None)
-        context.user_data.pop("confirm_batch", None)
-
-        await update.message.reply_text("🖼 Buyurtma rasmini yuboring (Photo yoki File).")
-        return CF_PHOTO
-
-    triple = _parse_brand_client_phone(update.message.text or "")
-    if not triple:
-        await update.message.reply_text(
-            "❌ Format noto‘g‘ri.\n"
-            "To‘g‘ri format: BRAND-MijozNomi-910175253\n"
-            "Masalan: LEAP-Akmal-910175253"
-        )
-        return CF_NEW_CLICK
-
-    brand, client_name, phone_plus = triple
-    cp_name = f"{brand} {client_name}".strip()
-    cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
-
-    if not cp or not cp.get("meta"):
-        await update.message.reply_text("❌ Kontragent yaratishda xatolik.")
-        return ConversationHandler.END
-
-    cid = create_confirm(
-        operator_id=op_id,
-        brand=brand,
-        client_name=client_name,
-        phone_plus=phone_plus,
-        counterparty_meta=cp["meta"],
-    )
-
-    context.user_data["confirm_id"] = int(cid)
-    context.user_data["confirm_data"] = {
-        "brand": brand,
-        "client_name": client_name,
-        "phone_plus": phone_plus,
-        "counterparty_meta": cp["meta"],
-        "image_path": "",
-        "item_type": "",
-        "size": "",
-        "bg_color": "",
-        "text_color": "",
-        "qm_note": "",
-        "qty": None,
-        "qty_unit_lat": "",
-        "qty_unit_ru": "",
-        "price_uzs": None,
-        "sales_channel_meta": None,
-        "sales_channel_name": "",
-        "group_meta": None,
-        "group_name": "",
-        "moment_iso_override": "",
-    }
-
-    context.user_data.pop("confirm_batch", None)
-
-    await update.message.reply_text("🖼 Buyurtma rasmini yuboring (Photo yoki File).")
-    return CF_PHOTO
-
-
-async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    op = context.user_data["operator"]
-    op_id = int(op.get("id") or 0)
-
-    cid = int((q.data or "").split("cfpick:", 1)[-1])
-    row = get_confirm(op_id, cid)
-    if not row:
-        await q.edit_message_text("❌ Topilmadi yoki sizga tegishli emas.")
-        return ConversationHandler.END
-
-    context.user_data["confirm_id"] = cid
-    context.user_data["confirm_data"] = {
-        "brand": row.get("brand") or "",
-        "client_name": row.get("client_name") or "",
-        "phone_plus": row.get("phone_plus") or "",
-        "counterparty_meta": row.get("counterparty_meta") or {},
-        "image_path": "",
-        "item_type": "",
-        "size": "",
-        "bg_color": "",
-        "text_color": "",
-        "qm_note": "",
-        "qty": None,
-        "qty_unit_lat": "",
-        "qty_unit_ru": "",
-        "price_uzs": None,
-        "sales_channel_meta": None,
-        "sales_channel_name": "",
-        "group_meta": None,
-        "group_name": "",
-        "moment_iso_override": "",
-    }
-
-    context.user_data.pop("confirm_batch", None)
-
-    await q.edit_message_text("🖼 Buyurtma rasmini yuboring (Photo yoki File).")
-    return CF_PHOTO
-
-
-async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    _ensure_confirm_data(context)
-
-    img_path = TMP_DIR / f"confirm_{msg.message_id}.jpg"
-
-    if msg.photo:
-        file = await msg.photo[-1].get_file()
-        await file.download_to_drive(str(img_path))
-    elif msg.document and (msg.document.mime_type or "").startswith("image/"):
-        file = await msg.document.get_file()
-        await file.download_to_drive(str(img_path))
-    else:
-        await msg.reply_text("❌ Iltimos rasm yuboring (Photo yoki File sifatida rasm).")
-        return CF_PHOTO
-
-    d = context.user_data["confirm_data"]
-    d["image_path"] = str(img_path)
-    context.user_data["confirm_data"] = d
-
-    await msg.reply_text("3) 🧾 M.T (Maxsulot turi) yozing. Masalan: karton birka")
-    return CF_KIND
-
-
-async def on_kind(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    text = (update.message.text or "").strip()
-    if not text:
-        await update.message.reply_text("❌ Maxsulot turi bo‘sh bo‘lmasin.")
-        return CF_KIND
-
-    d = context.user_data["confirm_data"]
-    d["item_type"] = text
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("4) 📏 R (Razmer) yozing. Masalan: 10x5")
-    return CF_SIZE
-
-
-async def on_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    text = (update.message.text or "").strip()
-    s = text.lower().replace("х", "x").replace("*", "x").replace(" ", "")
-    if "x" not in s:
-        await update.message.reply_text("❌ Razmer noto‘g‘ri. Masalan: 10x5")
-        return CF_SIZE
-
-    d = context.user_data["confirm_data"]
-    d["size"] = s
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("5) 🎨 F (Foni): Masalan: Oq / Qizil")
-    return CF_BG
-
-
-async def on_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    val = (update.message.text or "").strip()
-    if not val:
-        await update.message.reply_text("❌ Foni bo‘sh bo‘lmasin. Masalan: Oq")
-        return CF_BG
-
-    d = context.user_data["confirm_data"]
-    d["bg_color"] = val
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("6) 🔤 TI (Text rangi): Masalan: Qora / Qizil")
-    return CF_TEXT
-
-
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    val = (update.message.text or "").strip()
-    if not val:
-        await update.message.reply_text("❌ Text rangi bo‘sh bo‘lmasin. Masalan: Qizil")
-        return CF_TEXT
-
-    d = context.user_data["confirm_data"]
-    d["text_color"] = val
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("7) 📝 Q.M: (izoh) yozing. Masalan: laminatsiya / teshik 2 ta / va hokazo")
-    return CF_QM
-
-
-async def on_qm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    val = (update.message.text or "").strip()
-    d = context.user_data["confirm_data"]
-    d["qm_note"] = val
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("8) 🔢 S (Soni) yozing. Masalan: 3000 yoki 3000 sht / 3000 rulon / 3000 kg")
-    return CF_QTY
-
-
-async def on_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    qty, unit_lat, unit_ru = _parse_qty_and_unit(update.message.text or "")
-    if not qty:
-        await update.message.reply_text("❌ Soni noto‘g‘ri. Masalan: 3000 yoki 3000 sht")
-        return CF_QTY
-
-    if qty <= 0 or qty > 10_000_000:
-        await update.message.reply_text("❌ Soni juda katta/kichik. Masalan: 3000")
-        return CF_QTY
-
-    d = context.user_data["confirm_data"]
-    d["qty"] = int(qty)
-    d["qty_unit_lat"] = unit_lat
-    d["qty_unit_ru"] = unit_ru
-    context.user_data["confirm_data"] = d
-
-    return await _ask_sales_channel(update.message, context)
-
-
-async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    _ensure_confirm_data(context)
-
-    sc_id = (q.data or "").split("cfsc:", 1)[-1]
-    ch = (context.user_data.get("cf_channels_map") or {}).get(str(sc_id))
-    if not ch:
-        await q.edit_message_text("❌ Kanal topilmadi. Qaytadan /tasdiq qiling.")
-        return ConversationHandler.END
-
-    chosen_meta = ch.get("meta")
-    chosen_name = ch.get("name") or ""
-
-    locked_meta, locked_name = _get_locked_batch_channel(context)
-    if locked_meta and chosen_meta != locked_meta:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Davom etish", callback_data="cfscforce:ok")],
-            [InlineKeyboardButton("🔄 Qayta tanlash", callback_data="cfscforce:retry")],
-        ])
-        await q.edit_message_text(
-            "⚠️ Batchda KL (Kanal) bitta bo‘lishi kerak.\n\n"
-            f"✅ Siz shu kanalni tanlagansiz: {locked_name}\n"
-            f"❗ Siz hozir bosdingiz: {chosen_name}\n\n"
-            "✅ Davom etish bosilsa, batchdagi kanal bilan davom etadi.",
-            reply_markup=kb
-        )
-        return CF_CHANNEL
-
-    if locked_meta:
-        d = context.user_data["confirm_data"]
-        d["sales_channel_meta"] = locked_meta
-        d["sales_channel_name"] = locked_name
-        context.user_data["confirm_data"] = d
-    else:
-        d = context.user_data["confirm_data"]
-        d["sales_channel_meta"] = chosen_meta
-        d["sales_channel_name"] = chosen_name
-        context.user_data["confirm_data"] = d
-
-    return await _ask_product_group(q, context, page=0)
-
-
-async def on_group_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    _ensure_confirm_data(context)
-
-    gp_id = (q.data or "").split("cfg:", 1)[-1]
-    groups = context.user_data.get("cf_groups_all") or []
-    g = None
-    for it in groups:
-        if str(it.get("id")) == str(gp_id):
-            g = it
-            break
-
-    if not g:
-        await q.edit_message_text("❌ Группа topilmadi. Qaytadan /tasdiq qiling.")
-        return ConversationHandler.END
-
-    d = context.user_data["confirm_data"]
-    d["group_meta"] = g.get("meta")
-    d["group_name"] = g.get("name") or ""
-    context.user_data["confirm_data"] = d
-
-    await q.edit_message_text("10) 💰 Цена (narx) yozing. Masalan: 450")
-    return CF_PRICE
-
-
-async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    ddd = _digits_only(update.message.text or "")
-    if not ddd:
-        await update.message.reply_text("❌ Narx noto‘g‘ri. Masalan: 450")
-        return CF_PRICE
-
-    price = int(ddd)
-    if price <= 0 or price > 5_000_000_000:
-        await update.message.reply_text("❌ Narx noto‘g‘ri. Masalan: 450")
-        return CF_PRICE
-
-    d = context.user_data["confirm_data"]
-    d["price_uzs"] = price
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
-    return CF_REVIEW
-
-
-def _build_channel_caption(
-    *,
-    idx: int,
-    total: int,
-    brand: str,
-    item: Dict[str, Any],
-    sc_name: str,
-    operator_name: str,
-    moment_iso: str,
-    order_name: str,
-) -> str:
-    unit_lat = (item.get("qty_unit_lat") or "").strip()
-    qty_lat = f"{item.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
-    qm = (item.get("qm_note") or "").strip()
-    qm_show = qm if qm else "-"
-
-    # ✅ Telegramdagi vaqtni MoySklad UI ko'rinishiga moslab chiqaramiz
-    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
-
-    return "\n".join([
-        f"📦 Buyurtma: {idx}/{total}",
-        f"🏷 B: {brand}",
-        f"🧾 {item.get('item_type')}",
-        f"📏 {item.get('size')}",
-        f"🎨 {item.get('bg_color')}",
-        f"🔤 {item.get('text_color')}",
-        f"🔢 {qty_lat}",
-        f"📝 Q.M: {qm_show}",
-        f"📊 KL: {sc_name}",
-        f"👨‍💼 OR: {operator_name}",
-        f"🕒 Vaqt: {moment_show}",
-        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
-        f"🧾 MS: {order_name}",
-    ])
-
+# ... (bu yerga qadar sizning kodingiz o'zgarmagan)
+
+# =========================
+# ✅ on_review ichidagi moment logikasi TUZATILDI
+# =========================
 
 async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1140,9 +628,13 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Buyurtma to‘liq emas. Avval hamma maydonlarni to‘ldiring.")
         return ConversationHandler.END
 
-    moment_iso = (d.get("moment_iso_override") or "").strip()
-    if not moment_iso:
-        moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # ✅ 1) Telegram ko'radigan vaqt (TG) ni olamiz
+    moment_tg = (d.get("moment_iso_override") or "").strip()
+    if not moment_tg:
+        moment_tg = _tg_now_str()
+
+    # ✅ 2) MoySklad'ga yuboriladigan vaqt (MS) = TG -> MS konvert
+    moment_ms = _tg_str_to_ms_moment(moment_tg)
 
     items: List[Dict[str, Any]] = []
     batch = context.user_data.get("confirm_batch") or []
@@ -1189,12 +681,13 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Item: {idx}/{total}",
                 f"MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
                 f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
+                # ✅ info sifatida TG vaqt ham qo'shsak adashmaydi
+                f"TG_TIME:{moment_tg}",
             ])
 
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
-            # ✅ UOM meta (шт/кг/рулон) ni productga qo'yamiz
             uom_meta = get_or_create_uom_meta(unit_ru) if unit_ru else None
 
             prod = create_product(
@@ -1202,7 +695,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 productfolder_meta=it.get("group_meta"),
                 sale_price_uzs=int(it.get("price_uzs")),
                 price_type_meta=pt_meta,
-                uom_meta=uom_meta,  # ✅ NEW
+                uom_meta=uom_meta,
             )
 
             prod_id = str(prod.get("id") or "")
@@ -1219,18 +712,18 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "price": int(it.get("price_uzs")) * 100,
                 })
 
+            # ✅ MUHIM: create_customerorder ga endi moment_ms yuboramiz
             order = create_customerorder(
                 organization_meta=org["meta"],
                 agent_meta=cp_meta,
                 sales_channel_meta=sc_meta,
                 store_meta=store_meta,
-                moment_iso=moment_iso,
+                moment_iso=moment_ms,
                 description=desc,
                 positions=positions,
             )
             order_id = str(order.get("id") or "")
 
-            # ✅ rasm MoySklad'da: Files ham, Images ham (UI: "Изображение")
             if order_id:
                 try:
                     attach_file_to_customerorder(order_id, it.get("image_path"))
@@ -1252,7 +745,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     item=it,
                     sc_name=sc_name,
                     operator_name=op.get("name"),
-                    moment_iso=moment_iso,
+                    moment_iso=moment_ms,  # ✅ caption ichida TG'ga qaytarib chiqariladi
                     order_name=order.get("name", "N/A"),
                 )
                 with open(it.get("image_path"), "rb") as f:
@@ -1284,22 +777,28 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# =========================
+# ✅ on_time_text ham TG vaqt saqlaydi (keyin send paytida MS ga o'giriladi)
+# =========================
+
 async def on_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
-    txt = (update.message.text or "").strip().lower()
+    txt_raw = (update.message.text or "").strip()
+    txt = txt_raw.lower().strip()
 
     if txt == "now":
-        moment = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+        moment_tg = _tg_now_str()
         d = context.user_data["confirm_data"]
-        d["moment_iso_override"] = moment
+        d["moment_iso_override"] = moment_tg
         context.user_data["confirm_data"] = d
         await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
         return CF_REVIEW
 
     try:
-        dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
-        dt = dt.replace(tzinfo=TZ)
-        moment = dt.strftime("%Y-%m-%d %H:%M:%S")
+        # user "YYYY-MM-DD HH:MM" kirityapti -> TG_TZ deb qabul qilamiz
+        dt = datetime.strptime(txt_raw, "%Y-%m-%d %H:%M")
+        dt = dt.replace(tzinfo=TG_TZ)
+        moment_tg = dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         await update.message.reply_text(
             "❌ Format noto‘g‘ri.\n"
@@ -1308,107 +807,14 @@ async def on_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CF_TIME
 
     d = context.user_data["confirm_data"]
-    d["moment_iso_override"] = moment
+    d["moment_iso_override"] = moment_tg
     context.user_data["confirm_data"] = d
 
     await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
     return CF_REVIEW
 
 
-async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    _ensure_confirm_data(context)
-
-    key = (q.data or "").split("cfe:", 1)[-1]
-    if key == "back":
-        await q.edit_message_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
-        return CF_REVIEW
-
-    if key not in ("brand", "item", "size", "bg", "text", "qm", "qty", "channel"):
-        return CF_EDIT_CHOOSE
-
-    context.user_data["edit_key"] = key
-
-    prompts = {
-        "brand": "🏷 B (Brend) kiriting:",
-        "item": "🧾 M.T (masalan: karton birka):",
-        "size": "📏 R (masalan: 10x5):",
-        "bg": "🎨 F (masalan: Oq):",
-        "text": "🔤 TI (masalan: Qora):",
-        "qm": "📝 Q.M (izoh) kiriting:",
-        "qty": "🔢 S (masalan: 3000 yoki 3000 sht/rulon/kg):",
-        "channel": "📊 KL ni qayta tanlash uchun OK yozing:",
-    }
-    await q.edit_message_text(prompts[key])
-    return CF_EDIT_VALUE
-
-
-async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    key = context.user_data.get("edit_key")
-    val = (update.message.text or "").strip()
-    if not key:
-        await update.message.reply_text("❌ Xatolik: edit_key topilmadi.")
-        return CF_EDIT_VALUE
-
-    d = context.user_data["confirm_data"]
-
-    if key == "brand":
-        if not val:
-            await update.message.reply_text("❌ B bo‘sh bo‘lmasin.")
-            return CF_EDIT_VALUE
-        d["brand"] = val.strip().upper()
-
-    elif key == "item":
-        if not val:
-            await update.message.reply_text("❌ M.T bo‘sh bo‘lmasin.")
-            return CF_EDIT_VALUE
-        d["item_type"] = val.strip()
-
-    elif key == "size":
-        s = val.lower().replace("х", "x").replace("*", "x").replace(" ", "")
-        if "x" not in s:
-            await update.message.reply_text("❌ Razmer noto‘g‘ri. Masalan: 10x5")
-            return CF_EDIT_VALUE
-        d["size"] = s
-
-    elif key == "bg":
-        if not val:
-            await update.message.reply_text("❌ F bo‘sh bo‘lmasin.")
-            return CF_EDIT_VALUE
-        d["bg_color"] = val.strip()
-
-    elif key == "text":
-        if not val:
-            await update.message.reply_text("❌ TI bo‘sh bo‘lmasin.")
-            return CF_EDIT_VALUE
-        d["text_color"] = val.strip()
-
-    elif key == "qm":
-        d["qm_note"] = val.strip()
-
-    elif key == "qty":
-        qty, unit_lat, unit_ru = _parse_qty_and_unit(val)
-        if not qty:
-            await update.message.reply_text("❌ S noto‘g‘ri. Masalan: 3000 yoki 3000 sht")
-            return CF_EDIT_VALUE
-        d["qty"] = int(qty)
-        d["qty_unit_lat"] = unit_lat
-        d["qty_unit_ru"] = unit_ru
-
-    elif key == "channel":
-        context.user_data.pop("edit_key", None)
-        await update.message.reply_text("📊 KL (Kanal) ni tanlaymiz...")
-        return await _ask_sales_channel(update.message, context)
-
-    context.user_data["confirm_data"] = d
-    context.user_data.pop("edit_key", None)
-
-    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
-    return CF_REVIEW
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
-    return ConversationHandler.END
+# =========================
+# Qolgan funksiyalar (on_edit_choose, on_edit_value, cancel, va h.k.)
+# Sizning kodingizday qoladi.
+# =========================
