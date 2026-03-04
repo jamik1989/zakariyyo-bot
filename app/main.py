@@ -38,8 +38,8 @@ from .handlers.order import (
     kiritish_start,
     on_paytype_chosen,
     cp_search_text,
-    on_cp_pick,
-    on_cp_create_new,
+    on_cp_pick as order_on_cp_pick,              # ✅ FIX: alias (order)
+    on_cp_create_new as order_on_cp_create_new,  # ✅ FIX: alias (order)
     handle_manual_amount_date,
     handle_check_optional,
     on_sales_channel_chosen,
@@ -59,7 +59,7 @@ from .handlers.confirm import (
     tasdiq_start,
     on_new_confirm_click,
     on_cp_search_text,
-    on_cp_pick,
+    on_cp_pick as confirm_on_cp_pick,  # ✅ FIX: alias (confirm)
     on_pick,
     on_new_confirm_cp,
     on_photo,
@@ -185,8 +185,8 @@ def build_app() -> Application:
             STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
             STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
             STEP_CP_PICK: [
-                CallbackQueryHandler(on_cp_pick, pattern=r"^cp:"),
-                CallbackQueryHandler(on_cp_create_new, pattern=r"^cpnew:"),
+                CallbackQueryHandler(order_on_cp_pick, pattern=r"^cp:"),                 # ✅ FIX
+                CallbackQueryHandler(order_on_cp_create_new, pattern=r"^cpnew:"),        # ✅ FIX
             ],
             STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
             STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
@@ -210,7 +210,7 @@ def build_app() -> Application:
             ],
 
             CF_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_cp_search_text)],
-            CF_CP_PICK: [CallbackQueryHandler(on_cp_pick, pattern=r"^cfcp:")],
+            CF_CP_PICK: [CallbackQueryHandler(confirm_on_cp_pick, pattern=r"^cfcp:")],  # ✅ FIX
 
             CF_BRAND_ONLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
             CF_NEW_CLICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
@@ -225,7 +225,7 @@ def build_app() -> Application:
 
             CF_CHANNEL: [
                 CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:"),
-                CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),  # ✅ ADD
+                CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),
             ],
 
             CF_GROUP: [
