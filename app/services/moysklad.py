@@ -4,6 +4,7 @@ import os
 import mimetypes
 import logging
 import requests
+import base64
 
 from ..config import MOYSKLAD_BASE_URL, MOYSKLAD_TOKEN
 
@@ -577,43 +578,58 @@ def create_product(
 # ==================== PRODUCT IMAGE ====================
 
 def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """
+    Product карточкаси -> "Изображения" га расм тушириш.
+    1) Avval JSON + base64 (content) bilan yuboramiz (eng to‘g‘ri yo‘l).
+    2) Agar MS account’da boshqacha bo‘lsa, fallback sifatida multipart ham sinaymiz.
+    """
     if not product_id or not file_path or not os.path.exists(file_path):
         logger.warning("Product image: missing product_id or file not found. product=%s file=%s", product_id, file_path)
         return None
 
     url = _url(f"/entity/product/{product_id}/images")
     filename = os.path.basename(file_path)
-    mime, _ = mimetypes.guess_type(filename)
-    mime = mime or "application/octet-stream"
 
-    headers = _headers().copy()
-    headers.pop("Content-Type", None)
+    # MoySklad base64 image uchun odatda .jpg/.png kerak bo‘ladi
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in [".jpg", ".jpeg", ".png"]:
+        filename = filename + ".jpg"
 
-    def _try(field_name: str) -> Optional[Dict[str, Any]]:
-        try:
-            with open(file_path, "rb") as f:
-                files = {field_name: (filename, f, mime)}
-                r = requests.post(url, headers=headers, files=files, timeout=TIMEOUT)
+    # --- 1) JSON + base64 ---
+    try:
+        with open(file_path, "rb") as f:
+            content_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-            if not r.ok:
-                logger.warning(
-                    "Product image upload HTTP %s. field=%s url=%s body=%s",
-                    r.status_code, field_name, url, r.text[:2000]
-                )
-                return None
-
+        payload = {
+            "filename": filename,
+            "content": content_b64
+        }
+        r = requests.post(url, headers=_headers(), json=payload, timeout=TIMEOUT)
+        if r.ok:
             return r.json() if r.text else {"ok": True}
-        except Exception as e:
-            logger.warning("Product image upload failed: field=%s product=%s file=%s err=%s", field_name, product_id, file_path, e)
-            return None
 
-    res = _try("file")
-    if res is not None:
-        return res
+        logger.warning("Product image JSON upload HTTP %s url=%s body=%s", r.status_code, url, r.text[:2000])
+    except Exception as e:
+        logger.warning("Product image JSON upload failed: product=%s file=%s err=%s", product_id, file_path, e)
 
-    res2 = _try("image")
-    if res2 is not None:
-        return res2
+    # --- 2) Fallback multipart ---
+    try:
+        mime, _ = mimetypes.guess_type(filename)
+        mime = mime or "application/octet-stream"
+
+        headers = _headers().copy()
+        headers.pop("Content-Type", None)
+
+        with open(file_path, "rb") as f:
+            files = {"file": (filename, f, mime)}
+            r2 = requests.post(url, headers=headers, files=files, timeout=TIMEOUT)
+
+        if r2.ok:
+            return r2.json() if r2.text else {"ok": True}
+
+        logger.warning("Product image multipart upload HTTP %s url=%s body=%s", r2.status_code, url, r2.text[:2000])
+    except Exception as e:
+        logger.warning("Product image multipart upload failed: product=%s file=%s err=%s", product_id, file_path, e)
 
     return None
 
