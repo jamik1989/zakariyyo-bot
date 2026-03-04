@@ -17,7 +17,13 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import CONFIRM_CHAT_ID
-from ..db import list_open_confirms, search_open_confirms, get_confirm, mark_confirm_done, create_confirm
+from ..db import (
+    list_open_confirms,
+    search_open_confirms,
+    get_confirm,
+    mark_confirm_done,
+    create_confirm,
+)
 from ..services.moysklad import (
     get_default_organization,
     get_sales_channels,
@@ -59,15 +65,11 @@ from ..services.moysklad import (
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Sizning bot ishlaydigan TZ (moment default)
-TZ = ZoneInfo("Asia/Tashkent")
-
-# ✅ MoySklad UI vaqtiga mos chiqarish uchun:
-# MoySklad API'ga yuboriladigan "moment" odatda timezone'siz ketadi.
-# MoySklad uni o'z account TZ'si deb qabul qiladi (ko'p holatda Europe/Moscow).
-# Telegramda esa Toshkentda ko'rinishi uchun TG_TZ ga konvert qilamiz.
-MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
+# Bot ishlaydigan TZ (foydalanuvchi/TG tomoni)
 TG_TZ = ZoneInfo(os.getenv("TG_TZ", "Asia/Tashkent"))
+
+# MoySklad account TZ (MoySklad moment ni timezone'siz qabul qiladi va account TZ deb oladi)
+MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
 
 GROUPS_PAGE_SIZE = 10
 
@@ -281,12 +283,20 @@ def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
     return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
 
 
+def _tg_now_as_ms_moment() -> str:
+    """
+    Telegram vaqtini (TG_TZ) MoySklad qabul qiladigan moment stringga (MS_TZ) aylantiradi.
+    MoySklad'ga moment timezone'siz yuboriladi, MS account TZ deb qabul qiladi.
+    """
+    dt_tg = datetime.now(TG_TZ)
+    dt_ms = dt_tg.astimezone(MS_TZ)
+    return dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _fmt_moysklad_moment_for_tg(moment_iso: str) -> str:
     """
-    MoySklad API'ga yuboriladigan moment_iso timezone'siz bo'ladi.
-    MoySklad uni MS_TZ deb qabul qiladi (default Europe/Moscow).
-    Telegramda esa TG_TZ (default Asia/Tashkent) ga konvert qilib,
-    UI dagi ko'rinishga yaqin formatda chiqaramiz: DD.MM.YYYY HH:MM
+    moment_iso (YYYY-MM-DD HH:MM:SS) timezone'siz string.
+    Uni MS_TZ deb interpret qilib, TG_TZ ga o‘tkazib ko‘rsatamiz.
     """
     if not moment_iso:
         return ""
@@ -314,9 +324,8 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
 
     moment_iso = (d.get("moment_iso_override") or "").strip()
     if not moment_iso:
-        dt_tg = datetime.now(TG_TZ)
-        dt_ms = dt_tg.astimezone(MS_TZ)
-        moment_iso = dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+        moment_iso = _tg_now_as_ms_moment()
+    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
 
     batch = context.user_data.get("confirm_batch") or []
     batch_info = f"📦 Batch: {len(batch) + 1} ta buyurtma (yig‘ilmoqda)\n\n" if batch else ""
@@ -339,7 +348,7 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"{lock_info}"
         f"📁 Группа: {d.get('group_name') or 'N/A'}\n"
         f"🏬 Sklad: {CONFIRM_STORE_NAME}\n"
-        f"🕒 Vaqt: {moment}\n"
+        f"🕒 Vaqt: {moment_show}\n"
         f"🖼 Rasm: {img}\n\n"
         "Davom etamizmi?"
     )
@@ -514,11 +523,11 @@ async def tasdiq_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CF_PICK
 
+
 async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    # Bitta tugma: qidirish ham, format bilan yaratish ham shu yerda
     await q.edit_message_text(
         "🔎 Qidirish / Yaratish\n\n"
         "Brend yoki mijoz yoki telefon yozing (MoySklad bo‘lsa chiqadi).\n"
@@ -527,6 +536,7 @@ async def on_new_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYP
         "Masalan: LEAP-Akmal-910175253"
     )
     return CF_CP_SEARCH
+
 
 async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
@@ -544,7 +554,7 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv matni bo‘sh.")
         return CF_CP_SEARCH
 
-    # ✅ 1) Agar format bo‘lsa — darrov yaratamiz (qidiruv ham, yaratish ham shu joyda)
+    # ✅ 1) Format bo‘lsa — darrov yaratamiz
     triple = _parse_brand_client_phone(qtxt)
     if triple:
         brand, client_name, phone_plus = triple
@@ -586,7 +596,7 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return CF_PHOTO
 
-    # ✅ 2) Qidirish: avval OPEN tasdiqlar ichidan, keyin MoySklad kontragentlaridan
+    # ✅ 2) Qidirish: avval OPEN tasdiqlar, keyin MoySklad kontragentlar
     context.user_data["cf_last_q"] = qtxt
 
     try:
@@ -612,7 +622,6 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mp: Dict[str, Dict[str, Any]] = {}
     kb: List[List[InlineKeyboardButton]] = []
 
-    # OPEN tasdiqlar
     for r in open_hits:
         cid = int(r.get("id") or 0)
         if not cid:
@@ -620,7 +629,6 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = f"{(r.get('brand') or '').strip()} | {(r.get('client_name') or '').strip()} | {(r.get('phone_plus') or '').strip()}"
         kb.append([InlineKeyboardButton(("✅ " + title).strip()[:64], callback_data=f"cfpick:{cid}")])
 
-    # MoySklad kontragentlar
     for r in rows:
         cid = str(r.get("id") or "")
         if not cid:
@@ -642,6 +650,7 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CF_CP_PICK
 
+
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -659,7 +668,6 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mp = context.user_data.get("cf_cp_map") or {}
     cp = mp.get(str(cid))
 
-    # ✅ Ba'zan user_data map yo‘qolib qoladi: qayta qidirib id bo‘yicha topib olamiz
     if not cp:
         last_q = (context.user_data.get("cf_last_q") or "").strip()
         if last_q:
@@ -698,10 +706,10 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "moment_iso_override": "",
     }
 
-    # Brend so‘raymiz
     context.user_data["cf_brand_only"] = True
     await q.edit_message_text("🏷 Brend nomini yozing. Masalan: LEAP")
     return CF_BRAND_ONLY
+
 
 async def on_new_confirm_cp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
@@ -1042,7 +1050,10 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["price_uzs"] = price
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
+    await update.message.reply_text(
+        _render_review(context),
+        reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
+    )
     return CF_REVIEW
 
 
@@ -1062,7 +1073,6 @@ def _build_channel_caption(
     qm = (item.get("qm_note") or "").strip()
     qm_show = qm if qm else "-"
 
-    # ✅ Telegramdagi vaqtni MoySklad UI ko'rinishiga moslab chiqaramiz
     moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
 
     return "\n".join([
@@ -1142,9 +1152,10 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Buyurtma to‘liq emas. Avval hamma maydonlarni to‘ldiring.")
         return ConversationHandler.END
 
+    # ✅ MS moment: default TG now -> MS TZ
     moment_iso = (d.get("moment_iso_override") or "").strip()
     if not moment_iso:
-        moment_iso = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+        moment_iso = _tg_now_as_ms_moment()
 
     items: List[Dict[str, Any]] = []
     batch = context.user_data.get("confirm_batch") or []
@@ -1196,7 +1207,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
-            # ✅ UOM meta (шт/кг/рулон) ni productga qo'yamiz
             uom_meta = get_or_create_uom_meta(unit_ru) if unit_ru else None
 
             prod = create_product(
@@ -1204,7 +1214,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 productfolder_meta=it.get("group_meta"),
                 sale_price_uzs=int(it.get("price_uzs")),
                 price_type_meta=pt_meta,
-                uom_meta=uom_meta,  # ✅ NEW
+                uom_meta=uom_meta,
             )
 
             prod_id = str(prod.get("id") or "")
@@ -1232,7 +1242,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             order_id = str(order.get("id") or "")
 
-            # ✅ rasm MoySklad'da: Files ham, Images ham (UI: "Изображение")
             if order_id:
                 try:
                     attach_file_to_customerorder(order_id, it.get("image_path"))
@@ -1288,32 +1297,41 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
-    txt = (update.message.text or "").strip().lower()
+    txt_raw = (update.message.text or "").strip()
+    txt = txt_raw.lower()
 
     if txt == "now":
-        dt_tg = datetime.now(TG_TZ)
-        dt_ms = dt_tg.astimezone(MS_TZ)
-        moment = dt_ms.strftime("%Y-%m-%d %H:%M:%S")
-        
+        moment = _tg_now_as_ms_moment()
         d = context.user_data["confirm_data"]
         d["moment_iso_override"] = moment
+        context.user_data["confirm_data"] = d
+
+        await update.message.reply_text(
+            _render_review(context),
+            reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
+        )
+        return CF_REVIEW
 
     try:
-        dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
-
-        # ✅ foydalanuvchi kiritgan vaqt Telegram TZ deb olinadi
+        dt = datetime.strptime(txt_raw, "%Y-%m-%d %H:%M")
         dt_tg = dt.replace(tzinfo=TG_TZ)
-
-        # ✅ MoySklad TZ ga o‘tkazamiz
         dt_ms = dt_tg.astimezone(MS_TZ)
-
         moment = dt_ms.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        await update.message.reply_text(
+            "❌ Format noto‘g‘ri.\n"
+            "To‘g‘ri: 2026-02-18 21:30 yoki 'now'"
+        )
+        return CF_TIME
 
     d = context.user_data["confirm_data"]
     d["moment_iso_override"] = moment
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
+    await update.message.reply_text(
+        _render_review(context),
+        reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
+    )
     return CF_REVIEW
 
 
@@ -1324,7 +1342,10 @@ async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     key = (q.data or "").split("cfe:", 1)[-1]
     if key == "back":
-        await q.edit_message_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
+        await q.edit_message_text(
+            _render_review(context),
+            reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
+        )
         return CF_REVIEW
 
     if key not in ("brand", "item", "size", "bg", "text", "qm", "qty", "channel"):
@@ -1407,13 +1428,13 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["confirm_data"] = d
     context.user_data.pop("edit_key", None)
 
-    await update.message.reply_text(_render_review(context), reply_markup=_review_kb(bool(context.user_data.get("confirm_batch"))))
+    await update.message.reply_text(
+        _render_review(context),
+        reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
+    )
     return CF_REVIEW
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
-
-# --- compat alias for older imports ---
-_on_cp_search_text = on_cp_search_text
