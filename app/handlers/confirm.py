@@ -81,9 +81,7 @@ ALLOWED_GROUPS = [
     "pechat",
     "qolip",
     "karobka",
-    "o'g",
-    "pergament",
-    "stiker",
+    "o'g, pergament, stiker",
 ]
 
 CONFIRM_STORE_NAME = "Abusahiy 75"
@@ -175,6 +173,7 @@ def _item_abbr3(item_type: str) -> str:
 
 def _norm_group_name(s: str) -> str:
     s = (s or "").strip().lower()
+    s = s.replace("‘", "'").replace("`", "'").replace("ʻ", "'")
     s = re.sub(r"\s+", " ", s)
     return s
 
