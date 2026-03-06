@@ -38,8 +38,8 @@ from .handlers.order import (
     kiritish_start,
     on_paytype_chosen,
     cp_search_text,
-    on_cp_pick as order_on_cp_pick,              # ✅ FIX: alias (order)
-    on_cp_create_new as order_on_cp_create_new,  # ✅ FIX: alias (order)
+    on_cp_pick as order_on_cp_pick,
+    on_cp_create_new as order_on_cp_create_new,
     handle_manual_amount_date,
     handle_check_optional,
     on_sales_channel_chosen,
@@ -59,7 +59,7 @@ from .handlers.confirm import (
     tasdiq_start,
     on_new_confirm_click,
     on_cp_search_text,
-    on_cp_pick as confirm_on_cp_pick,  # ✅ FIX: alias (confirm)
+    on_cp_pick as confirm_on_cp_pick,
     on_pick,
     on_new_confirm_cp,
     on_photo,
@@ -70,7 +70,7 @@ from .handlers.confirm import (
     on_qm,
     on_qty,
     on_channel_pick,
-    on_channel_force,   # ✅ ADD: cfscforce handler
+    on_channel_force,
     on_groups_page,
     on_group_pick,
     on_price,
@@ -98,6 +98,20 @@ from .handlers.confirm import (
     CF_EDIT_CHOOSE,
     CF_EDIT_VALUE,
     cancel as cancel_confirm,
+)
+
+# ===== TAKROR =====
+from .handlers.takror import (
+    takror_start,
+    takror_search_text,
+    takror_pick_product,
+    takror_extra_text,
+    takror_qty_text,
+    TK_SEARCH,
+    TK_PICK,
+    TK_EXTRA,
+    TK_QTY,
+    cancel as cancel_takror,
 )
 
 # ===== ADMIN =====
@@ -185,8 +199,8 @@ def build_app() -> Application:
             STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
             STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
             STEP_CP_PICK: [
-                CallbackQueryHandler(order_on_cp_pick, pattern=r"^cp:"),                 # ✅ FIX
-                CallbackQueryHandler(order_on_cp_create_new, pattern=r"^cpnew:"),        # ✅ FIX
+                CallbackQueryHandler(order_on_cp_pick, pattern=r"^cp:"),
+                CallbackQueryHandler(order_on_cp_create_new, pattern=r"^cpnew:"),
             ],
             STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
             STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
@@ -208,13 +222,10 @@ def build_app() -> Application:
                 CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:"),
                 CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
             ],
-
             CF_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_cp_search_text)],
-            CF_CP_PICK: [CallbackQueryHandler(confirm_on_cp_pick, pattern=r"^cfcp:")],  # ✅ FIX
-
+            CF_CP_PICK: [CallbackQueryHandler(confirm_on_cp_pick, pattern=r"^cfcp:")],
             CF_BRAND_ONLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
             CF_NEW_CLICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
-
             CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
             CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
             CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
@@ -222,21 +233,17 @@ def build_app() -> Application:
             CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
             CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
             CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
-
             CF_CHANNEL: [
                 CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:"),
                 CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),
             ],
-
             CF_GROUP: [
                 CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
                 CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
             ],
             CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
             CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
-
             CF_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_time_text)],
-
             CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
             CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
         },
@@ -245,6 +252,22 @@ def build_app() -> Application:
         per_message=False,
     )
     application.add_handler(confirm_conv)
+
+    # ================= TAKROR (/takror) =================
+
+    takror_conv = ConversationHandler(
+        entry_points=[CommandHandler("takror", takror_start)],
+        states={
+            TK_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_search_text)],
+            TK_PICK: [CallbackQueryHandler(takror_pick_product, pattern=r"^tkp:")],
+            TK_EXTRA: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_extra_text)],
+            TK_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_qty_text)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_takror)],
+        allow_reentry=True,
+        per_message=False,
+    )
+    application.add_handler(takror_conv)
 
     return application
 

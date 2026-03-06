@@ -5,6 +5,7 @@ import mimetypes
 import logging
 import requests
 import base64
+from datetime import datetime
 
 from ..config import MOYSKLAD_BASE_URL, MOYSKLAD_TOKEN
 
@@ -105,6 +106,7 @@ def find_store_meta_by_name(name: str) -> Optional[Dict[str, Any]]:
         return None
 
     rows = get_stores(limit=2000)
+
     # 1) exact match
     for r in rows:
         if (r.get("name") or "").strip() == name and r.get("meta"):
@@ -188,10 +190,6 @@ def _search_counterparties_paged(
     limit: int = 50,
     max_total: int = 200,
 ) -> List[Dict[str, Any]]:
-    """
-    Pagination bilan counterparty yig'ish.
-    - max_total: jami nechta rowgacha yig'ish
-    """
     limit = max(1, min(int(limit), 1000))
     max_total = max(1, int(max_total))
 
@@ -225,24 +223,19 @@ def _search_counterparties_paged(
 
 def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     """
-    ✅ Kuchaytirilgan qidiruv:
+    Kuchaytirilgan qidiruv:
     - 2 ta harf/raqam bo'lsa ham ishlaydi
     - qisqa query uchun filter=name~ / phone~ ishlatadi
-    - uzun query uchun avvalgidek search= ishlatadi
+    - uzun query uchun search= ishlatadi
     - pagination bilan ko'proq chiqaradi
     """
     q = (query or "").strip()
     if not q:
         return []
 
-    # limit "UI uchun" bo'lib qoladi, lekin ichkarida ko'proq yig'ib,
-    # keyin limit bo'yicha qaytaramiz (to'liq ro'yxat kerak bo'lsa confirm.py ichida limitni kattaroq beramiz).
     ui_limit = max(1, int(limit))
-
-    # raqam bo'lsa phone bo'yicha qidiramiz
     digits = _norm_phone_digits(q)
 
-    # 2 ta belgida ham ishlasin
     if len(q) <= 2:
         if digits:
             rows = _search_counterparties_paged(
@@ -251,6 +244,7 @@ def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
                 max_total=max(ui_limit, 200),
             )
             return rows[:ui_limit]
+
         rows = _search_counterparties_paged(
             filter_expr=f"name~{q}",
             limit=50,
@@ -258,8 +252,6 @@ def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
         )
         return rows[:ui_limit]
 
-    # 3+ belgida:
-    # agar raqam bo'lsa phone filter ham sinab ko'ramiz (search ba'zan phone'ni yomon topadi)
     if digits and len(digits) >= 2:
         rows = _search_counterparties_paged(
             filter_expr=f"phone~{digits}",
@@ -269,7 +261,6 @@ def search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
         if rows:
             return rows[:ui_limit]
 
-    # default: search
     rows = _search_counterparties_paged(
         search_expr=q,
         limit=50,
@@ -472,7 +463,7 @@ def get_uoms(limit: int = 1000) -> List[Dict[str, Any]]:
 def find_uom_meta_by_name(name_ru: str) -> Optional[Dict[str, Any]]:
     """
     MoySklad'da UOM nomi bilan meta topadi.
-    Masalan: 'шт', 'кг', 'рулон'
+    Masalan: 'шт', 'кг', 'рулон', 'м'
     """
     name_ru = (name_ru or "").strip()
     if not name_ru:
@@ -480,12 +471,10 @@ def find_uom_meta_by_name(name_ru: str) -> Optional[Dict[str, Any]]:
 
     rows = get_uoms(limit=2000)
 
-    # exact
     for r in rows:
         if (r.get("name") or "").strip().lower() == name_ru.lower() and r.get("meta"):
             return r["meta"]
 
-    # contains
     nlow = name_ru.lower()
     for r in rows:
         if nlow in (r.get("name") or "").strip().lower() and r.get("meta"):
@@ -497,22 +486,21 @@ def find_uom_meta_by_name(name_ru: str) -> Optional[Dict[str, Any]]:
 def get_or_create_uom_meta(unit_ru: str) -> Optional[Dict[str, Any]]:
     """
     XAVFSIZ: hozircha CREATE qilmaydi, faqat TOPADI.
-    UOM topilmasa None qaytaradi (product baribir yaratiladi).
+    UOM topilmasa None qaytaradi.
     """
     unit_ru = (unit_ru or "").strip()
 
-    # normalize
     mapping = {
         "шт": "шт",
         "штук": "шт",
         "sht": "шт",
+        "dona": "шт",
         "kg": "кг",
         "кг": "кг",
         "килограмм": "кг",
         "рулон": "рулон",
         "rulon": "рулон",
         "roll": "рулон",
-        # ✅ meter
         "м": "м",
         "metr": "м",
         "meter": "м",
@@ -524,7 +512,11 @@ def get_or_create_uom_meta(unit_ru: str) -> Optional[Dict[str, Any]]:
 
     meta = find_uom_meta_by_name(norm)
     if not meta:
-        logger.warning("UOM not found in MoySklad: %s (normalized=%s). Product will be created without UOM.", unit_ru, norm)
+        logger.warning(
+            "UOM not found in MoySklad: %s (normalized=%s). Product will be created without UOM.",
+            unit_ru,
+            norm,
+        )
     return meta
 
 
@@ -535,7 +527,7 @@ def create_product(
     productfolder_meta: Dict[str, Any],
     sale_price_uzs: int,
     price_type_meta: Optional[Dict[str, Any]] = None,
-    uom_meta: Optional[Dict[str, Any]] = None,   # ✅ NEW
+    uom_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     name = (name or "").strip()
     if not name:
@@ -568,11 +560,54 @@ def create_product(
         ],
     }
 
-    # ✅ NEW: UOM ni productga qo'yish (Единица измерения)
     if uom_meta:
         payload["uom"] = {"meta": uom_meta}
 
     return ms_post("/entity/product", payload)
+
+
+def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
+    product_id = (product_id or "").strip()
+    if not product_id:
+        return None
+    try:
+        data = ms_get(f"/entity/product/{product_id}")
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        logger.warning("get_product_by_id failed: %s", e)
+    return None
+
+
+def search_products(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    /takror uchun tovar qidirish.
+    Avval search bilan, kerak bo'lsa name~ filter bilan sinaydi.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+
+    try:
+        data = ms_get("/entity/product", params={"search": q, "limit": max(1, int(limit))})
+        if isinstance(data, dict):
+            rows = data.get("rows", []) or []
+    except Exception as e:
+        logger.warning("search_products(search=) failed: %s", e)
+
+    if rows:
+        return rows[:limit]
+
+    try:
+        data = ms_get("/entity/product", params={"filter": f"name~{q}", "limit": max(1, int(limit))})
+        if isinstance(data, dict):
+            rows = data.get("rows", []) or []
+    except Exception as e:
+        logger.warning("search_products(filter=name~) failed: %s", e)
+
+    return rows[:limit]
 
 
 # ==================== PRODUCT IMAGE ====================
@@ -580,8 +615,8 @@ def create_product(
 def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[str, Any]]:
     """
     Product карточкаси -> "Изображения" га расм тушириш.
-    1) Avval JSON + base64 (content) bilan yuboramiz (eng to‘g‘ri yo‘l).
-    2) Agar MS account’da boshqacha bo‘lsa, fallback sifatida multipart ham sinaymiz.
+    1) Avval JSON + base64 (content) bilan yuboramiz.
+    2) Agar kerak bo'lsa multipart ham sinaymiz.
     """
     if not product_id or not file_path or not os.path.exists(file_path):
         logger.warning("Product image: missing product_id or file not found. product=%s file=%s", product_id, file_path)
@@ -590,20 +625,15 @@ def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[st
     url = _url(f"/entity/product/{product_id}/images")
     filename = os.path.basename(file_path)
 
-    # MoySklad base64 image uchun odatda .jpg/.png kerak bo‘ladi
     ext = os.path.splitext(filename)[1].lower()
     if ext not in [".jpg", ".jpeg", ".png"]:
         filename = filename + ".jpg"
 
-    # --- 1) JSON + base64 ---
     try:
         with open(file_path, "rb") as f:
             content_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        payload = {
-            "filename": filename,
-            "content": content_b64
-        }
+        payload = {"filename": filename, "content": content_b64}
         r = requests.post(url, headers=_headers(), json=payload, timeout=TIMEOUT)
         if r.ok:
             return r.json() if r.text else {"ok": True}
@@ -612,7 +642,6 @@ def attach_image_to_product(product_id: str, file_path: str) -> Optional[Dict[st
     except Exception as e:
         logger.warning("Product image JSON upload failed: product=%s file=%s err=%s", product_id, file_path, e)
 
-    # --- 2) Fallback multipart ---
     try:
         mime, _ = mimetypes.guess_type(filename)
         mime = mime or "application/octet-stream"
@@ -683,7 +712,7 @@ def attach_image_to_customerorder(order_id: str, file_path: str) -> Optional[Dic
 def create_customerorder(
     organization_meta: Dict[str, Any],
     agent_meta: Dict[str, Any],
-    moment_iso: str,
+    moment_iso: Optional[str],
     description: str,
     sales_channel_meta: Optional[Dict[str, Any]] = None,
     positions: Optional[List[Dict[str, Any]]] = None,
@@ -691,10 +720,13 @@ def create_customerorder(
     vat_enabled: bool = False,
     vat_included: bool = False,
 ) -> Dict[str, Any]:
+    # moment berilmasa, hozirgi vaqt qo'yamiz (timezone'siz)
+    moment_final = (moment_iso or "").strip() or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     payload: Dict[str, Any] = {
         "organization": {"meta": organization_meta},
         "agent": {"meta": agent_meta},
-        "moment": moment_iso,
+        "moment": moment_final,
         "description": description,
         "applicable": False,   # черновик
         "vatEnabled": bool(vat_enabled),
@@ -706,4 +738,5 @@ def create_customerorder(
         payload["store"] = {"meta": store_meta}
     if positions:
         payload["positions"] = positions
+
     return ms_post("/entity/customerorder", payload)

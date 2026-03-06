@@ -30,12 +30,12 @@ from ..services.moysklad import (
     get_product_folders,
     find_price_type_meta_by_name,
     find_store_meta_by_name,
-    get_or_create_uom_meta,  # ✅ UOM (шт/кг/рулон)
+    get_or_create_uom_meta,
     create_product,
     attach_image_to_product,
     create_customerorder,
     attach_file_to_customerorder,
-    attach_image_to_customerorder,  # ✅ NEW: order images (UI: "Изображение")
+    attach_image_to_customerorder,
     get_or_create_counterparty,
     search_counterparties,
 )
@@ -65,10 +65,7 @@ from ..services.moysklad import (
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Bot ishlaydigan TZ (foydalanuvchi/TG tomoni)
 TG_TZ = ZoneInfo(os.getenv("TG_TZ", "Asia/Tashkent"))
-
-# MoySklad account TZ (MoySklad moment ni timezone'siz qabul qiladi va account TZ deb oladi)
 MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
 
 GROUPS_PAGE_SIZE = 10
@@ -83,6 +80,10 @@ ALLOWED_GROUPS = [
     "paket salafan",
     "pechat",
     "qolip",
+    "karobka",
+    "o'g",
+    "pergament",
+    "stiker",
 ]
 
 CONFIRM_STORE_NAME = "Abusahiy 75"
@@ -90,7 +91,11 @@ CONFIRM_STORE_NAME = "Abusahiy 75"
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq")]],
+        keyboard=[[
+            KeyboardButton("/kiritish"),
+            KeyboardButton("/tasdiq"),
+            KeyboardButton("/takror"),
+        ]],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=True,
@@ -192,13 +197,14 @@ def _parse_qty_and_unit(text: str) -> Tuple[Optional[int], str, str]:
 
     qty = int(num)
 
-    # ✅ sht + dona => шт
     if unit in ("sht", "sh", "шт", "sht.", "sh.", "dona", "dona."):
         return qty, "sht", "шт"
     if unit in ("rulon", "рулон", "rul", "rul."):
         return qty, "rulon", "рулон"
     if unit in ("kg", "кг"):
         return qty, "kg", "кг"
+    if unit in ("m", "metr", "meter", "metre", "м"):
+        return qty, "m", "м"
 
     return qty, (unit or ""), (unit or "")
 
@@ -244,7 +250,16 @@ def _clone_item_for_batch(d: Dict[str, Any]) -> Dict[str, Any]:
     return {k: copy.deepcopy(d.get(k)) for k in keep_keys}
 
 
-def _reset_item_fields_keep_cp_brand(d: Dict[str, Any]) -> Dict[str, Any]:
+def _reset_item_fields_keep_cp_brand_channel(d: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Batch ichida keyingi buyurtma uchun:
+    - brand/CP saqlanadi
+    - channel saqlanadi
+    - qolgan item fieldlar tozalanadi
+    """
+    keep_sc_meta = d.get("sales_channel_meta")
+    keep_sc_name = d.get("sales_channel_name")
+
     d["image_path"] = ""
     d["item_type"] = ""
     d["size"] = ""
@@ -255,21 +270,29 @@ def _reset_item_fields_keep_cp_brand(d: Dict[str, Any]) -> Dict[str, Any]:
     d["qty_unit_lat"] = ""
     d["qty_unit_ru"] = ""
     d["price_uzs"] = None
-    d["sales_channel_meta"] = None
-    d["sales_channel_name"] = ""
     d["group_meta"] = None
     d["group_name"] = ""
+
+    d["sales_channel_meta"] = keep_sc_meta
+    d["sales_channel_name"] = keep_sc_name
     return d
 
 
 def _item_is_complete(it: Dict[str, Any]) -> bool:
     try:
         return (
-            bool(it.get("item_type")) and bool(it.get("size")) and bool(it.get("bg_color")) and bool(it.get("text_color"))
-            and isinstance(it.get("qty"), int) and it.get("qty") > 0
-            and isinstance(it.get("price_uzs"), int) and it.get("price_uzs") > 0
-            and bool(it.get("sales_channel_meta")) and bool(it.get("group_meta"))
-            and bool(it.get("image_path")) and os.path.exists(it.get("image_path"))
+            bool(it.get("item_type"))
+            and bool(it.get("size"))
+            and bool(it.get("bg_color"))
+            and bool(it.get("text_color"))
+            and isinstance(it.get("qty"), int)
+            and it.get("qty") > 0
+            and isinstance(it.get("price_uzs"), int)
+            and it.get("price_uzs") > 0
+            and bool(it.get("sales_channel_meta"))
+            and bool(it.get("group_meta"))
+            and bool(it.get("image_path"))
+            and os.path.exists(it.get("image_path"))
         )
     except Exception:
         return False
@@ -277,27 +300,24 @@ def _item_is_complete(it: Dict[str, Any]) -> bool:
 
 def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
     batch = context.user_data.get("confirm_batch") or []
-    if not batch:
-        return None, ""
-    first = batch[0] or {}
-    return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
+    if batch:
+        first = batch[0] or {}
+        return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
+
+    d = context.user_data.get("confirm_data") or {}
+    if d.get("sales_channel_meta"):
+        return d.get("sales_channel_meta"), (d.get("sales_channel_name") or "")
+
+    return None, ""
 
 
 def _tg_now_as_ms_moment() -> str:
-    """
-    Telegram vaqtini (TG_TZ) MoySklad qabul qiladigan moment stringga (MS_TZ) aylantiradi.
-    MoySklad'ga moment timezone'siz yuboriladi, MS account TZ deb qabul qiladi.
-    """
     dt_tg = datetime.now(TG_TZ)
     dt_ms = dt_tg.astimezone(MS_TZ)
     return dt_ms.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _fmt_moysklad_moment_for_tg(moment_iso: str) -> str:
-    """
-    moment_iso (YYYY-MM-DD HH:MM:SS) timezone'siz string.
-    Uni MS_TZ deb interpret qilib, TG_TZ ga o‘tkazib ko‘rsatamiz.
-    """
     if not moment_iso:
         return ""
 
@@ -317,10 +337,9 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     img_ok = bool(d.get("image_path") and os.path.exists(d["image_path"]))
     img = "BOR ✅" if img_ok else "YO‘Q ❌"
 
-    unit_lat = (d.get("qty_unit_lat") or "").strip()
     qty_show = _fmt_int(d.get("qty"))
-    if unit_lat:
-        qty_show = f"{qty_show} {unit_lat}"
+    if d.get("qty_unit_ru"):
+        qty_show = f"{qty_show} {d.get('qty_unit_ru')}"
 
     moment_iso = (d.get("moment_iso_override") or "").strip()
     if not moment_iso:
@@ -354,6 +373,60 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     )
 
 
+def _build_item_line_for_desc(idx: int, total: int, it: Dict[str, Any]) -> str:
+    qty_ru = _fmt_int(it.get("qty"))
+    if it.get("qty_unit_ru"):
+        qty_ru = f"{qty_ru} {it.get('qty_unit_ru')}"
+    return (
+        f"{idx}/{total}) "
+        f"MT:{it.get('item_type')} | "
+        f"R:{it.get('size')} | "
+        f"F:{it.get('bg_color')} | "
+        f"TI:{it.get('text_color')} | "
+        f"S:{qty_ru} | "
+        f"QM:{it.get('qm_note') or '-'} | "
+        f"Narx:{it.get('price_uzs')} | "
+        f"Group:{it.get('group_name')}"
+    )
+
+
+def _build_channel_caption(
+    *,
+    idx: int,
+    total: int,
+    brand: str,
+    item: Dict[str, Any],
+    operator_name: str,
+    moment_iso: str,
+    order_name: str,
+) -> str:
+    qty_show = _fmt_int(item.get("qty"))
+    unit_ru = (item.get("qty_unit_ru") or "").strip()
+    if unit_ru:
+        qty_show = f"{qty_show} {unit_ru}"
+
+    qm = (item.get("qm_note") or "").strip()
+    qm_show = qm if qm else "-"
+
+    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
+
+    return "\n".join([
+        f"📦 Buyurtma: {idx}/{total}",
+        f"🏷 {brand}",
+        f"🧾 {item.get('item_type')}",
+        f"📏 {item.get('size')}",
+        f"🎨 {item.get('bg_color')}",
+        f"🔤 {item.get('text_color')}",
+        f"🔢 {qty_show}",
+        f"📝 {qm_show}",
+        "",
+        f"👨‍💼 {operator_name}",
+        f"🕒 {moment_show}",
+        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
+        f"🧾 MS: {order_name}",
+    ])
+
+
 async def on_channel_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -377,6 +450,14 @@ async def on_channel_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    if locked_meta:
+        d = context.user_data.get("confirm_data") or {}
+        d["sales_channel_meta"] = locked_meta
+        d["sales_channel_name"] = locked_name
+        context.user_data["confirm_data"] = d
+        return await _ask_product_group(update_obj, context, page=0)
+
     channels = get_sales_channels(limit=300)
     if not channels:
         msg = "❌ MoySklad’da 'Канал продаж' topilmadi."
@@ -392,13 +473,10 @@ async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"cfsc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(kb)
 
-    locked_meta, locked_name = _get_locked_batch_channel(context)
-    hint = f"\n\n🔒 Batch kanali: {locked_name}" if locked_meta and locked_name else ""
-
     if hasattr(update_obj, "edit_message_text"):
-        await update_obj.edit_message_text("📊 KL (Kanal) ni tanlang:" + hint, reply_markup=markup)
+        await update_obj.edit_message_text("📊 KL (Kanal) ni tanlang:", reply_markup=markup)
     else:
-        await update_obj.reply_text("📊 KL (Kanal) ni tanlang:" + hint, reply_markup=markup)
+        await update_obj.reply_text("📊 KL (Kanal) ni tanlang:", reply_markup=markup)
 
     return CF_CHANNEL
 
@@ -554,7 +632,6 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv matni bo‘sh.")
         return CF_CP_SEARCH
 
-    # ✅ 1) Format bo‘lsa — darrov yaratamiz
     triple = _parse_brand_client_phone(qtxt)
     if triple:
         brand, client_name, phone_plus = triple
@@ -596,7 +673,6 @@ async def on_cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return CF_PHOTO
 
-    # ✅ 2) Qidirish: avval OPEN tasdiqlar, keyin MoySklad kontragentlar
     context.user_data["cf_last_q"] = qtxt
 
     try:
@@ -941,7 +1017,7 @@ async def on_qm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["qm_note"] = val
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text("8) 🔢 S (Soni) yozing. Masalan: 3000 yoki 3000 sht / 3000 rulon / 3000 kg")
+    await update.message.reply_text("8) 🔢 S (Soni) yozing. Masalan: 3000 yoki 3000 sht / 3000 rulon / 3000 kg / 3000 m / 3000 dona")
     return CF_QTY
 
 
@@ -979,31 +1055,10 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chosen_meta = ch.get("meta")
     chosen_name = ch.get("name") or ""
 
-    locked_meta, locked_name = _get_locked_batch_channel(context)
-    if locked_meta and chosen_meta != locked_meta:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Davom etish", callback_data="cfscforce:ok")],
-            [InlineKeyboardButton("🔄 Qayta tanlash", callback_data="cfscforce:retry")],
-        ])
-        await q.edit_message_text(
-            "⚠️ Batchda KL (Kanal) bitta bo‘lishi kerak.\n\n"
-            f"✅ Siz shu kanalni tanlagansiz: {locked_name}\n"
-            f"❗ Siz hozir bosdingiz: {chosen_name}\n\n"
-            "✅ Davom etish bosilsa, batchdagi kanal bilan davom etadi.",
-            reply_markup=kb
-        )
-        return CF_CHANNEL
-
-    if locked_meta:
-        d = context.user_data["confirm_data"]
-        d["sales_channel_meta"] = locked_meta
-        d["sales_channel_name"] = locked_name
-        context.user_data["confirm_data"] = d
-    else:
-        d = context.user_data["confirm_data"]
-        d["sales_channel_meta"] = chosen_meta
-        d["sales_channel_name"] = chosen_name
-        context.user_data["confirm_data"] = d
+    d = context.user_data["confirm_data"]
+    d["sales_channel_meta"] = chosen_meta
+    d["sales_channel_name"] = chosen_name
+    context.user_data["confirm_data"] = d
 
     return await _ask_product_group(q, context, page=0)
 
@@ -1057,41 +1112,6 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
-def _build_channel_caption(
-    *,
-    idx: int,
-    total: int,
-    brand: str,
-    item: Dict[str, Any],
-    sc_name: str,
-    operator_name: str,
-    moment_iso: str,
-    order_name: str,
-) -> str:
-    unit_lat = (item.get("qty_unit_lat") or "").strip()
-    qty_lat = f"{item.get('qty')}{(' ' + unit_lat) if unit_lat else ''}"
-    qm = (item.get("qm_note") or "").strip()
-    qm_show = qm if qm else "-"
-
-    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
-
-    return "\n".join([
-        f"📦 Buyurtma: {idx}/{total}",
-        f"🏷 B: {brand}",
-        f"🧾 {item.get('item_type')}",
-        f"📏 {item.get('size')}",
-        f"🎨 {item.get('bg_color')}",
-        f"🔤 {item.get('text_color')}",
-        f"🔢 {qty_lat}",
-        f"📝 Q.M: {qm_show}",
-        f"📊 KL: {sc_name}",
-        f"👨‍💼 OR: {operator_name}",
-        f"🕒 Vaqt: {moment_show}",
-        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
-        f"🧾 MS: {order_name}",
-    ])
-
-
 async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1126,7 +1146,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         batch.append(_clone_item_for_batch(d))
         context.user_data["confirm_batch"] = batch
 
-        context.user_data["confirm_data"] = _reset_item_fields_keep_cp_brand(d)
+        context.user_data["confirm_data"] = _reset_item_fields_keep_cp_brand_channel(d)
 
         await q.edit_message_text(
             f"✅ Buyurtma batchga qo‘shildi.\n"
@@ -1152,7 +1172,6 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Buyurtma to‘liq emas. Avval hamma maydonlarni to‘ldiring.")
         return ConversationHandler.END
 
-    # ✅ MS moment: default TG now -> MS TZ
     moment_iso = (d.get("moment_iso_override") or "").strip()
     if not moment_iso:
         moment_iso = _tg_now_as_ms_moment()
@@ -1172,7 +1191,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sc_name = items[-1].get("sales_channel_name") or ""
 
     for it in items:
-        if it.get("sales_channel_meta") != sc_meta:
+        if not it.get("sales_channel_meta"):
             it["sales_channel_meta"] = sc_meta
             it["sales_channel_name"] = sc_name
 
@@ -1187,23 +1206,22 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pt_meta:
             pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
 
-        created_orders: List[Dict[str, Any]] = []
         total = len(items)
+
+        positions: List[Dict[str, Any]] = []
+        item_product_ids: List[str] = []
+
+        desc_lines = [
+            f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}"
+        ]
 
         for idx, it in enumerate(items, start=1):
             if not _item_is_complete(it):
                 raise RuntimeError("Batch ichida to‘liq bo‘lmagan buyurtma bor (rasm/maydonlar).")
 
+            desc_lines.append(_build_item_line_for_desc(idx, total, it))
+
             unit_ru = (it.get("qty_unit_ru") or "").strip()
-            qty_ru = f"{it.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
-
-            desc = "\n".join([
-                f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
-                f"Item: {idx}/{total}",
-                f"MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
-                f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
-            ])
-
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
@@ -1220,10 +1238,11 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prod_id = str(prod.get("id") or "")
             prod_meta = prod.get("meta")
 
+            item_product_ids.append(prod_id)
+
             if prod_id:
                 attach_image_to_product(prod_id, it.get("image_path"))
 
-            positions: List[Dict[str, Any]] = []
             if prod_meta:
                 positions.append({
                     "assortment": {"meta": prod_meta},
@@ -1231,40 +1250,44 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "price": int(it.get("price_uzs")) * 100,
                 })
 
-            order = create_customerorder(
-                organization_meta=org["meta"],
-                agent_meta=cp_meta,
-                sales_channel_meta=sc_meta,
-                store_meta=store_meta,
-                moment_iso=moment_iso,
-                description=desc,
-                positions=positions,
-            )
-            order_id = str(order.get("id") or "")
+        desc = "\n".join(desc_lines)
 
-            if order_id:
+        order = create_customerorder(
+            organization_meta=org["meta"],
+            agent_meta=cp_meta,
+            sales_channel_meta=sc_meta,
+            store_meta=store_meta,
+            moment_iso=moment_iso,
+            description=desc,
+            positions=positions,
+        )
+
+        order_id = str(order.get("id") or "")
+        order_name = order.get("name", "N/A")
+
+        if order_id:
+            # birinchi rasmni orderga asosiy ilova sifatida biriktirib qo'yamiz
+            first_img = items[0].get("image_path")
+            if first_img:
                 try:
-                    attach_file_to_customerorder(order_id, it.get("image_path"))
+                    attach_file_to_customerorder(order_id, first_img)
+                except Exception:
+                    pass
+                try:
+                    attach_image_to_customerorder(order_id, first_img)
                 except Exception:
                     pass
 
-                try:
-                    attach_image_to_customerorder(order_id, it.get("image_path"))
-                except Exception:
-                    pass
-
-            created_orders.append(order)
-
-            if CONFIRM_CHAT_ID:
+        if CONFIRM_CHAT_ID:
+            for idx, it in enumerate(items, start=1):
                 caption = _build_channel_caption(
                     idx=idx,
                     total=total,
                     brand=brand,
                     item=it,
-                    sc_name=sc_name,
                     operator_name=op.get("name"),
                     moment_iso=moment_iso,
-                    order_name=order.get("name", "N/A"),
+                    order_name=order_name,
                 )
                 with open(it.get("image_path"), "rb") as f:
                     await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
@@ -1278,7 +1301,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=q.message.chat_id,
-            text=f"✅ Buyurtma(lar) qabul qilindi. MoySklad’da {len(created_orders)} ta buyurtma yaratildi.",
+            text=f"✅ Buyurtma(lar) qabul qilindi. MoySklad’da 1 ta buyurtma va {len(positions)} ta position yaratildi.",
             reply_markup=_menu_keyboard(),
         )
 
@@ -1360,7 +1383,7 @@ async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "bg": "🎨 F (masalan: Oq):",
         "text": "🔤 TI (masalan: Qora):",
         "qm": "📝 Q.M (izoh) kiriting:",
-        "qty": "🔢 S (masalan: 3000 yoki 3000 sht/rulon/kg):",
+        "qty": "🔢 S (masalan: 3000 yoki 3000 sht/rulon/kg/m/dona):",
         "channel": "📊 KL ni qayta tanlash uchun OK yozing:",
     }
     await q.edit_message_text(prompts[key])
@@ -1422,6 +1445,18 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif key == "channel":
         context.user_data.pop("edit_key", None)
+        # batch ichida qayta channel so'ralmasin:
+        locked_meta, locked_name = _get_locked_batch_channel(context)
+        if locked_meta:
+            d["sales_channel_meta"] = locked_meta
+            d["sales_channel_name"] = locked_name
+            context.user_data["confirm_data"] = d
+            await update.message.reply_text(
+                _render_review(context),
+                reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
+            )
+            return CF_REVIEW
+
         await update.message.reply_text("📊 KL (Kanal) ni tanlaymiz...")
         return await _ask_sales_channel(update.message, context)
 

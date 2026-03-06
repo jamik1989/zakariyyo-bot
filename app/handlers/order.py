@@ -16,7 +16,7 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import GROUP_CHAT_ID
-from ..db import create_confirm_upsert  # ✅ NEW: /tasdiq uchun OPEN yozamiz
+from ..db import create_confirm_upsert
 from ..services.moysklad import (
     ms_get,
     get_sales_channels,
@@ -29,20 +29,25 @@ from ..services.moysklad import (
 )
 from ..services.vision import detect_amount_date_time
 
-# states (main.py bilan MOS)
+# states
 STEP_PAYTYPE, STEP_CP_SEARCH, STEP_CP_PICK, STEP_AMOUNT_DATE, STEP_CHECK, STEP_CHANNEL, STEP_REVIEW = range(7)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-TZ = ZoneInfo("Asia/Tashkent")
+TG_TZ = ZoneInfo(os.getenv("TG_TZ", "Asia/Tashkent"))
+MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
 
 
 # ---------------- UI ----------------
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq")]],
+        keyboard=[[
+            KeyboardButton("/kiritish"),
+            KeyboardButton("/tasdiq"),
+            KeyboardButton("/takror"),
+        ]],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=True,
@@ -110,7 +115,6 @@ def _parse_amount(text: str) -> Optional[int]:
     d = _digits_only(text)
     if not d:
         return None
-    # karta raqamini ushlamasin
     if len(d) >= 13:
         return None
     val = int(d)
@@ -178,6 +182,24 @@ def _search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     return data.get("rows", []) or []
 
 
+def _tg_now_as_ms_parts() -> Tuple[str, str]:
+    dt_tg = datetime.now(TG_TZ)
+    dt_ms = dt_tg.astimezone(MS_TZ)
+    return dt_ms.strftime("%Y-%m-%d"), dt_ms.strftime("%H:%M:%S")
+
+
+def _fmt_ms_to_tg(date_iso: Optional[str], time_hms: Optional[str]) -> str:
+    if not date_iso:
+        return "TOPILMADI"
+    raw = f"{date_iso} {time_hms or '00:00:00'}"
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+        dt = dt.replace(tzinfo=MS_TZ).astimezone(TG_TZ)
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return raw
+
+
 async def _ask_sales_channel(chat_update_obj, context: ContextTypes.DEFAULT_TYPE):
     channels = get_sales_channels(limit=50)
     if not channels:
@@ -189,18 +211,15 @@ async def _ask_sales_channel(chat_update_obj, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     channels = channels[:10]
-    context.user_data["channels_map"] = {c["id"]: c["meta"] for c in channels}
+    context.user_data["channels_map"] = {str(c["id"]): c["meta"] for c in channels}
 
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"sc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(kb)
 
-    # 6/7
-    title = "📊 Kanal prodajni tanlang"
     progress = "6/7"
-
     text = (
         f"🧾 *Kiritish — {progress}*\n"
-        f"{title}\n\n"
+        f"📊 Kanal prodajni tanlang\n\n"
         "Quyidagilardan birini tanlang:"
     )
 
@@ -213,11 +232,12 @@ async def _ask_sales_channel(chat_update_obj, context: ContextTypes.DEFAULT_TYPE
 
 
 def _ensure_now_date_time(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(TZ)
-    if not context.user_data.get("date_iso"):
-        context.user_data["date_iso"] = now.date().isoformat()
-    if not context.user_data.get("time_hms"):
-        context.user_data["time_hms"] = now.strftime("%H:%M:%S")
+    if not context.user_data.get("date_iso") or not context.user_data.get("time_hms"):
+        date_iso, time_hms = _tg_now_as_ms_parts()
+        if not context.user_data.get("date_iso"):
+            context.user_data["date_iso"] = date_iso
+        if not context.user_data.get("time_hms"):
+            context.user_data["time_hms"] = time_hms
 
 
 def _card_line(label: str, value: str) -> str:
@@ -235,8 +255,7 @@ def _build_review_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     pay = "Naqt" if pt == "cash" else "Karta"
     cp_txt = _cp_title(cp) if cp else "TOPILMADI"
     amt_txt = _fmt_amount(amount)
-    date_txt = date_iso or "TOPILMADI"
-    time_txt = time_hms or "TOPILMADI"
+    moment_txt = _fmt_ms_to_tg(date_iso, time_hms)
     ch_txt = "TANLANDI ✅" if sc else "TANLANMAGAN ❌"
 
     progress = "7/7"
@@ -247,8 +266,7 @@ def _build_review_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"{_card_line('👤 Kontragent', cp_txt)}\n"
         f"{_card_line('💳 To‘lov turi', pay)}\n"
         f"{_card_line('💰 Summa', amt_txt + ' UZS')}\n"
-        f"{_card_line('📅 Sana', date_txt)}\n"
-        f"{_card_line('🕒 Vaqt', time_txt)}\n"
+        f"{_card_line('🕒 Vaqt', moment_txt)}\n"
         f"{_card_line('📊 Kanal', ch_txt)}\n\n"
         f"━━━━━━━━━━━━━━\n"
         f"Davom etamizmi?"
@@ -269,14 +287,13 @@ def _cleanup_after_done(context: ContextTypes.DEFAULT_TYPE):
         "channels_map",
         "sales_channel_meta",
         "edit_target",
+        "cp_last_q",
+        "cp_new_text",
     ):
         context.user_data.pop(k, None)
 
 
 def _infer_brand_client_from_cp_name(cp_name: str) -> Tuple[str, str]:
-    """
-    cp_name odatda: "BRAND Client Name"
-    """
     s = (cp_name or "").strip()
     if not s:
         return "", ""
@@ -293,7 +310,6 @@ async def kiritish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Avval /login qiling.", reply_markup=_menu_keyboard())
         return ConversationHandler.END
 
-    # 1/7
     await update.message.reply_text(
         "🧾 *Kiritish — 1/7*\n"
         "━━━━━━━━━━━━━━\n"
@@ -314,7 +330,6 @@ async def on_paytype_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["paytype"] = pt
 
-    # 2/7
     await query.edit_message_text(
         "🧾 *Kiritish — 2/7*\n"
         "━━━━━━━━━━━━━━\n"
@@ -333,14 +348,18 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv bo‘sh. Yozing.")
         return STEP_CP_SEARCH
 
-    # ✅ Format bilan yaratish ham shu joyda ishlaydi (1 oqim)
     triple = _parse_brand_name_phone(q)
     if triple:
         brand, client_name, phone_plus = triple
         cp_name = f"{brand} {client_name}".strip()
         cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
 
-        context.user_data["cp"] = {"id": cp.get("id"), "name": cp.get("name"), "phone": cp.get("phone"), "meta": cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": cp.get("id"),
+            "name": cp.get("name"),
+            "phone": cp.get("phone"),
+            "meta": cp.get("meta"),
+        }
 
         pt = context.user_data.get("paytype")
         if pt == "card":
@@ -352,7 +371,6 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return STEP_CHECK
 
-        # CASH: faqat summa so‘raymiz (sana/vaqt auto)
         context.user_data.pop("amount_uzs", None)
         context.user_data["date_iso"] = None
         context.user_data["time_hms"] = None
@@ -366,18 +384,16 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return STEP_AMOUNT_DATE
 
-    # normal search
     context.user_data["cp_last_q"] = q
     rows = _search_counterparties(q, limit=10) or []
     context.user_data["cp_candidates"] = {str(r.get("id")): r for r in rows if r.get("id")}
 
-    kb = []
+    kb: List[List[InlineKeyboardButton]] = []
     for r in rows[:10]:
         rid = r.get("id")
         if rid:
             kb.append([InlineKeyboardButton(_cp_title(r), callback_data=f"cp:{rid}")])
 
-    # ✅ Bitta tugma: topilmasa ham yaratish
     context.user_data["cp_new_text"] = q
     kb.append([InlineKeyboardButton("➕ Topilmasa yaratish", callback_data="cpnew:1")])
 
@@ -400,14 +416,23 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return STEP_CP_PICK
 
+
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    cp_id = (query.data or "").split("cp:", 1)[-1].strip()
+    data = (query.data or "").strip()
+
+    if data.startswith("cpnew:"):
+        return await on_cp_create_new(update, context)
+
+    if not data.startswith("cp:"):
+        await query.edit_message_text("❌ Noto‘g‘ri tanlov. Qaytadan /kiritish qiling.", reply_markup=None)
+        return ConversationHandler.END
+
+    cp_id = data.split("cp:", 1)[-1].strip()
     cand = (context.user_data.get("cp_candidates") or {}).get(str(cp_id))
 
-    # ✅ Ba’zan candidate map yo‘qolib qoladi: last_q bilan qayta qidirib topamiz
     if not cand:
         last_q = (context.user_data.get("cp_last_q") or "").strip()
         if last_q:
@@ -424,7 +449,12 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Kontragent topilmadi. Qaytadan /kiritish qiling.", reply_markup=None)
         return ConversationHandler.END
 
-    context.user_data["cp"] = {"id": cand.get("id"), "name": cand.get("name"), "phone": cand.get("phone"), "meta": cand.get("meta")}
+    context.user_data["cp"] = {
+        "id": cand.get("id"),
+        "name": cand.get("name"),
+        "phone": cand.get("phone"),
+        "meta": cand.get("meta"),
+    }
 
     pt = context.user_data.get("paytype")
     if pt == "card":
@@ -436,7 +466,6 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return STEP_CHECK
 
-    # CASH: faqat summa
     context.user_data.pop("amount_uzs", None)
     context.user_data["date_iso"] = None
     context.user_data["time_hms"] = None
@@ -449,6 +478,7 @@ async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return STEP_AMOUNT_DATE
+
 
 async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -466,7 +496,12 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = raw or "New Counterparty"
     cp = get_or_create_counterparty(name=name, phone=(phone_plus or None))
 
-    context.user_data["cp"] = {"id": cp.get("id"), "name": cp.get("name"), "phone": cp.get("phone"), "meta": cp.get("meta")}
+    context.user_data["cp"] = {
+        "id": cp.get("id"),
+        "name": cp.get("name"),
+        "phone": cp.get("phone"),
+        "meta": cp.get("meta"),
+    }
 
     pt = context.user_data.get("paytype")
     if pt == "card":
@@ -491,11 +526,8 @@ async def on_cp_create_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return STEP_AMOUNT_DATE
 
+
 async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    CASH: faqat summa kiritiladi (date/time auto)
-    EDIT: edit_target bo‘lsa o‘sha field’ni o‘zgartiradi
-    """
     text = update.message.text or ""
     target = context.user_data.get("edit_target")
 
@@ -509,7 +541,6 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         _ensure_now_date_time(context)
         context.user_data.pop("edit_target", None)
 
-        # cash: summa tayyor bo‘ldi -> kanal tanlash
         if context.user_data.get("paytype") == "cash" and not context.user_data.get("sales_channel_meta"):
             return await _ask_sales_channel(update.message, context)
 
@@ -527,7 +558,12 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         client = parts[1] if len(parts) == 2 else ""
         cp_name = f"{b} {client}".strip() if client else b
         new_cp = get_or_create_counterparty(name=cp_name, phone=cp.get("phone"))
-        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": new_cp.get("id"),
+            "name": new_cp.get("name"),
+            "phone": new_cp.get("phone"),
+            "meta": new_cp.get("meta"),
+        }
         context.user_data.pop("edit_target", None)
 
     elif target == "client":
@@ -540,7 +576,12 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         brand = old_name.split(" ", 1)[0] if old_name else ""
         cp_name = f"{brand} {name}".strip() if brand else name
         new_cp = get_or_create_counterparty(name=cp_name, phone=cp.get("phone"))
-        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": new_cp.get("id"),
+            "name": new_cp.get("name"),
+            "phone": new_cp.get("phone"),
+            "meta": new_cp.get("meta"),
+        }
         context.user_data.pop("edit_target", None)
 
     elif target == "phone":
@@ -550,7 +591,12 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
             return STEP_AMOUNT_DATE
         cp = context.user_data.get("cp") or {}
         new_cp = get_or_create_counterparty(name=cp.get("name") or "NoName", phone=phone_plus)
-        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": new_cp.get("id"),
+            "name": new_cp.get("name"),
+            "phone": new_cp.get("phone"),
+            "meta": new_cp.get("meta"),
+        }
         context.user_data.pop("edit_target", None)
 
     elif target == "date":
@@ -631,7 +677,7 @@ async def on_sales_channel_chosen(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
 
     sc_id = (query.data or "").split("sc:", 1)[-1]
-    sc_meta = (context.user_data.get("channels_map") or {}).get(sc_id)
+    sc_meta = (context.user_data.get("channels_map") or {}).get(str(sc_id))
     if not sc_meta:
         await query.edit_message_text("❌ Kanal topilmadi. Qaytadan /kiritish qiling.", reply_markup=None)
         return ConversationHandler.END
@@ -674,7 +720,6 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action != "confirm":
         return STEP_REVIEW
 
-    # ✅ confirm: MoySkladga yuboramiz
     pt = context.user_data.get("paytype")
     cp = context.user_data.get("cp") or {}
     amount = context.user_data.get("amount_uzs")
@@ -721,7 +766,6 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if created and created.get("id") and check_path and os.path.exists(check_path):
             attach_file_to_cashin(str(created["id"]), str(check_path))
 
-    # ✅ NEW: /tasdiq moduliga OPEN yozib qo'yamiz
     try:
         op_id = int(operator.get("id") or 0)
         cp_name = (cp.get("name") or "").strip()
@@ -739,9 +783,8 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # ✅ Operatorga: faqat 1 ta final xabar (ikki marta chiqmasin)
     try:
-        await query.message.delete()  # review xabarini o‘chiradi
+        await query.message.delete()
     except Exception:
         pass
 
@@ -751,15 +794,14 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=_menu_keyboard(),
     )
 
-    # ✅ Kanalga (GROUP_CHAT_ID) to‘liq info ketaveradi (admin/monitor uchun)
     if GROUP_CHAT_ID and created:
+        moment_show = _fmt_ms_to_tg(date_iso, time_hms)
         caption = (
             f"✅ {doc_kind} (черновик)\n\n"
             f"👤 Kontragent: {_cp_title(cp)}\n"
             f"💳 To‘lov turi: {'Naqt' if pt=='cash' else 'Karta'}\n"
             f"💰 Summa: {_fmt_amount(amount)} UZS\n"
-            f"📅 Sana: {date_iso}\n"
-            f"🕒 Vaqt: {time_hms or '00:00:00'}\n"
+            f"🕒 Vaqt: {moment_show}\n"
             f"👨‍💼 Operator: {operator.get('name')} ({operator.get('phone')})\n"
             f"🧾 MoySklad: {created.get('name','N/A')}"
         )

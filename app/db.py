@@ -15,11 +15,29 @@ def get_conn():
     return conn
 
 
+def _loads_meta(raw: str) -> Dict[str, Any]:
+    try:
+        return json.loads(raw or "{}")
+    except Exception:
+        return {}
+
+
+def _row_to_confirm_dict(r: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(r["id"]),
+        "brand": r["brand"],
+        "client_name": r["client_name"],
+        "phone_plus": r["phone_plus"],
+        "counterparty_meta": _loads_meta(r["counterparty_meta"]),
+        "created_at": r["created_at"],
+    }
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # operators (old)
+    # operators
     cur.execute("""
     CREATE TABLE IF NOT EXISTS operators (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +48,7 @@ def init_db():
     )
     """)
 
-    # ✅ confirms (new)
+    # confirms
     cur.execute("""
     CREATE TABLE IF NOT EXISTS confirms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,11 +64,23 @@ def init_db():
     )
     """)
 
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_confirms_operator_status ON confirms(operator_id, status)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_confirms_operator_status "
+        "ON confirms(operator_id, status)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_confirms_operator_brand_phone_status "
+        "ON confirms(operator_id, brand, phone_plus, status)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_confirms_created_at "
+        "ON confirms(created_at)"
+    )
+
     conn.commit()
     conn.close()
 
-    # ✅ seed operators from Railway ENV
+    # Railway ENV dan operatorlar seed qilinadi
     seed_operators_from_env()
 
 
@@ -77,8 +107,6 @@ def seed_operators_from_env() -> int:
             continue
 
         phone, name, password = cols[0], cols[1], cols[2]
-
-        # only digits in phone
         phone = "".join(ch for ch in phone if ch.isdigit())
         if not phone:
             continue
@@ -90,7 +118,7 @@ def seed_operators_from_env() -> int:
     return added
 
 
-# ---------------- operators (old) ----------------
+# ---------------- operators ----------------
 
 def create_operator(phone: str, name: str, password: str) -> bool:
     conn = get_conn()
@@ -120,7 +148,47 @@ def check_operator(phone: str, password: str):
     return row
 
 
-# ---------------- confirms (new) ----------------
+def list_operators(limit: int = 200) -> List[Dict[str, Any]]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, phone, name, created_at FROM operators ORDER BY id DESC LIMIT ?",
+        (int(limit),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": int(r["id"]),
+            "phone": r["phone"],
+            "name": r["name"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def count_operators() -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(1) AS c FROM operators")
+    row = cur.fetchone()
+    conn.close()
+    return int(row["c"] if row else 0)
+
+
+def delete_operator_by_phone(phone: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM operators WHERE phone=?", ((phone or "").strip(),))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
+# ---------------- confirms ----------------
 
 def create_confirm(
     operator_id: int,
@@ -131,7 +199,6 @@ def create_confirm(
 ) -> int:
     """
     Oddiy insert: har safar yangi OPEN yozadi.
-    (Variant A uchun pastdagi create_confirm_upsert ishlatiladi.)
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -165,11 +232,11 @@ def create_confirm_upsert(
     counterparty_meta: Dict[str, Any],
 ) -> int:
     """
-    Variant A (takrorni oldini olish):
+    Variant A:
     Agar operator_id + brand + phone_plus bo'yicha OPEN mavjud bo'lsa:
       - yangi yozuv yaratmaydi
       - mavjud OPEN id ni qaytaradi
-      - client_name / counterparty_meta ni yangilaydi (so'nggi holat bo'lsin)
+      - client_name / counterparty_meta ni yangilaydi
 
     Aks holda:
       - yangi OPEN yaratadi
@@ -181,13 +248,11 @@ def create_confirm_upsert(
     meta_json = json.dumps(counterparty_meta or {}, ensure_ascii=False)
 
     if not op_id or not brand_key or not phone_key:
-        # fallback: oddiy create
         return create_confirm(operator_id, brand, client_name, phone_plus, counterparty_meta)
 
     conn = get_conn()
     cur = conn.cursor()
 
-    # OPEN mavjudmi?
     cur.execute(
         """
         SELECT id
@@ -205,7 +270,6 @@ def create_confirm_upsert(
 
     if row:
         existing_id = int(row["id"])
-        # Mavjud OPEN ni yangilaymiz
         cur.execute(
             """
             UPDATE confirms
@@ -220,7 +284,6 @@ def create_confirm_upsert(
         return existing_id
 
     conn.close()
-    # Yo'q bo'lsa: yangi yaratamiz
     return create_confirm(op_id, brand_key, client_clean, phone_key, counterparty_meta)
 
 
@@ -240,17 +303,35 @@ def list_open_confirms(operator_id: int, limit: int = 20) -> List[Dict[str, Any]
     rows = cur.fetchall()
     conn.close()
 
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        out.append({
-            "id": int(r["id"]),
-            "brand": r["brand"],
-            "client_name": r["client_name"],
-            "phone_plus": r["phone_plus"],
-            "counterparty_meta": json.loads(r["counterparty_meta"] or "{}"),
-            "created_at": r["created_at"],
-        })
-    return out
+    return [_row_to_confirm_dict(r) for r in rows]
+
+
+def search_open_confirms(operator_id: int, q: str, limit: int = 20) -> List[Dict[str, Any]]:
+    conn = get_conn()
+    cur = conn.cursor()
+
+    like = f"%{(q or '').lower()}%"
+
+    cur.execute(
+        """
+        SELECT id, brand, client_name, phone_plus, counterparty_meta, created_at
+        FROM confirms
+        WHERE operator_id=? AND status='OPEN'
+          AND (
+            LOWER(COALESCE(brand,'')) LIKE ?
+            OR LOWER(COALESCE(client_name,'')) LIKE ?
+            OR LOWER(COALESCE(phone_plus,'')) LIKE ?
+          )
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (int(operator_id), like, like, like, int(limit)),
+    )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [_row_to_confirm_dict(r) for r in rows]
 
 
 def get_confirm(operator_id: int, confirm_id: int) -> Optional[Dict[str, Any]]:
@@ -276,7 +357,7 @@ def get_confirm(operator_id: int, confirm_id: int) -> Optional[Dict[str, Any]]:
         "brand": r["brand"],
         "client_name": r["client_name"],
         "phone_plus": r["phone_plus"],
-        "counterparty_meta": json.loads(r["counterparty_meta"] or "{}"),
+        "counterparty_meta": _loads_meta(r["counterparty_meta"]),
         "status": r["status"],
         "created_at": r["created_at"],
     }
@@ -299,71 +380,31 @@ def mark_confirm_done(operator_id: int, confirm_id: int) -> bool:
     return changed
 
 
-# ---------------- admin helpers ----------------
-
-def list_operators(limit: int = 200) -> List[Dict[str, Any]]:
+def get_latest_open_confirm(operator_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, phone, name, created_at FROM operators ORDER BY id DESC LIMIT ?",
-        (int(limit),),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return [
-        {"id": int(r["id"]), "phone": r["phone"], "name": r["name"], "created_at": r["created_at"]}
-        for r in rows
-    ]
-
-
-def count_operators() -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(1) AS c FROM operators")
-    row = cur.fetchone()
-    conn.close()
-    return int(row["c"] if row else 0)
-
-
-def delete_operator_by_phone(phone: str) -> bool:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM operators WHERE phone=?", ((phone or "").strip(),))
-    conn.commit()
-    deleted = cur.rowcount > 0
-    conn.close()
-    return deleted
-def search_open_confirms(operator_id: int, q: str, limit: int = 20):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    like = f"%{q.lower()}%"
-
-    cur.execute("""
-        SELECT id, brand, client_name, phone_plus, counterparty_meta, created_at
+        """
+        SELECT id, brand, client_name, phone_plus, counterparty_meta, status, created_at
         FROM confirms
         WHERE operator_id=? AND status='OPEN'
-        AND (
-            LOWER(COALESCE(brand,'')) LIKE ?
-            OR LOWER(COALESCE(client_name,'')) LIKE ?
-            OR LOWER(COALESCE(phone_plus,'')) LIKE ?
-        )
         ORDER BY id DESC
-        LIMIT ?
-    """, (operator_id, like, like, like, limit))
-
-    rows = cur.fetchall()
+        LIMIT 1
+        """,
+        (int(operator_id),),
+    )
+    r = cur.fetchone()
     conn.close()
 
-    result = []
-    for r in rows:
-        result.append({
-            "id": r[0],
-            "brand": r[1],
-            "client_name": r[2],
-            "phone_plus": r[3],
-            "counterparty_meta": r[4],
-            "created_at": r[5]
-        })
+    if not r:
+        return None
 
-    return result
+    return {
+        "id": int(r["id"]),
+        "brand": r["brand"],
+        "client_name": r["client_name"],
+        "phone_plus": r["phone_plus"],
+        "counterparty_meta": _loads_meta(r["counterparty_meta"]),
+        "status": r["status"],
+        "created_at": r["created_at"],
+    }
