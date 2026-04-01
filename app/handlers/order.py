@@ -1,4 +1,4 @@
-# app/handlers/order.py
+﻿# app/handlers/order.py
 import re
 import os
 from pathlib import Path
@@ -348,44 +348,56 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv bo‘sh. Yozing.")
         return STEP_CP_SEARCH
 
+    # ✅ Format bilan yaratish (1 oqim)
     triple = _parse_brand_name_phone(q)
     if triple:
-        brand, client_name, phone_plus = triple
-        cp_name = f"{brand} {client_name}".strip()
-        cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
+        try:
+            brand, client_name, phone_plus = triple
+            cp_name = f"{brand} {client_name}".strip()
+            cp = get_or_create_counterparty(name=cp_name, phone=phone_plus)
 
-        context.user_data["cp"] = {
-            "id": cp.get("id"),
-            "name": cp.get("name"),
-            "phone": cp.get("phone"),
-            "meta": cp.get("meta"),
-        }
+            context.user_data["cp"] = {
+                "id": cp.get("id"),
+                "name": cp.get("name"),
+                "phone": cp.get("phone"),
+                "meta": cp.get("meta"),
+            }
 
-        pt = context.user_data.get("paytype")
-        if pt == "card":
+            pt = context.user_data.get("paytype")
+            if pt == "card":
+                await update.message.reply_text(
+                    "🧾 *Kiritish — 3/7*\n"
+                    "━━━━━━━━━━━━━━\n"
+                    "3) Chek rasmini yuboring (foto).",
+                    parse_mode="Markdown",
+                )
+                return STEP_CHECK
+
+            context.user_data.pop("amount_uzs", None)
+            context.user_data["date_iso"] = None
+            context.user_data["time_hms"] = None
+            context.user_data.pop("sales_channel_meta", None)
+
             await update.message.reply_text(
-                "🧾 *Kiritish — 3/7*\n"
+                "🧾 *Kiritish — 4/7*\n"
                 "━━━━━━━━━━━━━━\n"
-                "3) Chek rasmini yuboring (foto).",
+                "3) Summani kiriting (masalan: 5000000)",
                 parse_mode="Markdown",
             )
-            return STEP_CHECK
+            return STEP_AMOUNT_DATE
+        except Exception as e:
+            await update.message.reply_text(f"❌ Kontragent yaratishda xatolik: {e}")
+            return STEP_CP_SEARCH
 
-        context.user_data.pop("amount_uzs", None)
-        context.user_data["date_iso"] = None
-        context.user_data["time_hms"] = None
-        context.user_data.pop("sales_channel_meta", None)
-
-        await update.message.reply_text(
-            "🧾 *Kiritish — 4/7*\n"
-            "━━━━━━━━━━━━━━\n"
-            "3) Summani kiriting (masalan: 5000000)",
-            parse_mode="Markdown",
-        )
-        return STEP_AMOUNT_DATE
-
+    # normal search
     context.user_data["cp_last_q"] = q
-    rows = _search_counterparties(q, limit=10) or []
+
+    try:
+        rows = _search_counterparties(q, limit=10) or []
+    except Exception as e:
+        await update.message.reply_text(f"❌ Qidiruvda xatolik: {e}")
+        return STEP_CP_SEARCH
+
     context.user_data["cp_candidates"] = {str(r.get("id")): r for r in rows if r.get("id")}
 
     kb: List[List[InlineKeyboardButton]] = []
@@ -415,7 +427,6 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return STEP_CP_PICK
-
 
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
