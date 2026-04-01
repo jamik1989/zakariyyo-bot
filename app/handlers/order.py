@@ -29,7 +29,6 @@ from ..services.moysklad import (
 )
 from ..services.vision import detect_amount_date_time
 
-# states
 STEP_PAYTYPE, STEP_CP_SEARCH, STEP_CP_PICK, STEP_AMOUNT_DATE, STEP_CHECK, STEP_CHANNEL, STEP_REVIEW = range(7)
 
 TMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "tmp"
@@ -38,8 +37,6 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 TG_TZ = ZoneInfo(os.getenv("TG_TZ", "Asia/Tashkent"))
 MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
 
-
-# ---------------- UI ----------------
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -79,8 +76,6 @@ def _edit_fields_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="rv:back")],
     ])
 
-
-# ---------------- helpers ----------------
 
 def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
@@ -174,12 +169,19 @@ def _search_counterparties(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     q = (query or "").strip()
     if not q:
         return []
+
     digits = _digits_only(q)
+
     if len(digits) >= 7:
         data = ms_get("/entity/counterparty", params={"filter": f"phone~{digits}", "limit": limit})
     else:
         data = ms_get("/entity/counterparty", params={"search": q, "limit": limit})
-    return data.get("rows", []) or []
+
+    if not isinstance(data, dict):
+        return []
+
+    rows = data.get("rows", [])
+    return rows if isinstance(rows, list) else []
 
 
 def _tg_now_as_ms_parts() -> Tuple[str, str]:
@@ -216,10 +218,9 @@ async def _ask_sales_channel(chat_update_obj, context: ContextTypes.DEFAULT_TYPE
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"sc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(kb)
 
-    progress = "6/7"
     text = (
-        f"🧾 *Kiritish — {progress}*\n"
-        f"📊 Kanal prodajni tanlang\n\n"
+        "🧾 *Kiritish — 6/7*\n"
+        "📊 Kanal prodajni tanlang\n\n"
         "Quyidagilardan birini tanlang:"
     )
 
@@ -258,18 +259,17 @@ def _build_review_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     moment_txt = _fmt_ms_to_tg(date_iso, time_hms)
     ch_txt = "TANLANDI ✅" if sc else "TANLANMAGAN ❌"
 
-    progress = "7/7"
     return (
-        f"🧾 *Kiritish — {progress}*\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"✅ *Tekshiruv kartochkasi*\n\n"
+        "🧾 *Kiritish — 7/7*\n"
+        "━━━━━━━━━━━━━━\n"
+        "✅ *Tekshiruv kartochkasi*\n\n"
         f"{_card_line('👤 Kontragent', cp_txt)}\n"
         f"{_card_line('💳 To‘lov turi', pay)}\n"
         f"{_card_line('💰 Summa', amt_txt + ' UZS')}\n"
         f"{_card_line('🕒 Vaqt', moment_txt)}\n"
         f"{_card_line('📊 Kanal', ch_txt)}\n\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"Davom etamizmi?"
+        "━━━━━━━━━━━━━━\n"
+        "Davom etamizmi?"
     )
 
 
@@ -302,8 +302,6 @@ def _infer_brand_client_from_cp_name(cp_name: str) -> Tuple[str, str]:
     client = parts[1].strip() if len(parts) == 2 else ""
     return brand, client
 
-
-# ---------------- flow ----------------
 
 async def kiritish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("operator"):
@@ -348,7 +346,6 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Qidiruv bo‘sh. Yozing.")
         return STEP_CP_SEARCH
 
-    # ✅ Format bilan yaratish (1 oqim)
     triple = _parse_brand_name_phone(q)
     if triple:
         try:
@@ -389,7 +386,6 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Kontragent yaratishda xatolik: {e}")
             return STEP_CP_SEARCH
 
-    # normal search
     context.user_data["cp_last_q"] = q
 
     try:
@@ -427,6 +423,7 @@ async def cp_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return STEP_CP_PICK
+
 
 async def on_cp_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -569,12 +566,7 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         client = parts[1] if len(parts) == 2 else ""
         cp_name = f"{b} {client}".strip() if client else b
         new_cp = get_or_create_counterparty(name=cp_name, phone=cp.get("phone"))
-        context.user_data["cp"] = {
-            "id": new_cp.get("id"),
-            "name": new_cp.get("name"),
-            "phone": new_cp.get("phone"),
-            "meta": new_cp.get("meta"),
-        }
+        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
         context.user_data.pop("edit_target", None)
 
     elif target == "client":
@@ -587,12 +579,7 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         brand = old_name.split(" ", 1)[0] if old_name else ""
         cp_name = f"{brand} {name}".strip() if brand else name
         new_cp = get_or_create_counterparty(name=cp_name, phone=cp.get("phone"))
-        context.user_data["cp"] = {
-            "id": new_cp.get("id"),
-            "name": new_cp.get("name"),
-            "phone": new_cp.get("phone"),
-            "meta": new_cp.get("meta"),
-        }
+        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
         context.user_data.pop("edit_target", None)
 
     elif target == "phone":
@@ -602,12 +589,7 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
             return STEP_AMOUNT_DATE
         cp = context.user_data.get("cp") or {}
         new_cp = get_or_create_counterparty(name=cp.get("name") or "NoName", phone=phone_plus)
-        context.user_data["cp"] = {
-            "id": new_cp.get("id"),
-            "name": new_cp.get("name"),
-            "phone": new_cp.get("phone"),
-            "meta": new_cp.get("meta"),
-        }
+        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
         context.user_data.pop("edit_target", None)
 
     elif target == "date":
