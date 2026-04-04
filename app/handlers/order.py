@@ -46,6 +46,7 @@ def _menu_keyboard() -> ReplyKeyboardMarkup:
         selective=True,
     )
 
+
 def _paytype_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💵 Naqt", callback_data="pt:cash")],
@@ -648,6 +649,15 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
 
     _ensure_now_date_time(context)
 
+    ocr_date = context.user_data.get("date_iso")
+    ocr_time = context.user_data.get("time_hms")
+    if ocr_date and ocr_time:
+        await msg.reply_text(
+            f"🕒 Chekdan topildi: {ocr_date} {ocr_time}\n"
+            f"Agar noto‘g‘ri bo‘lsa, keyin *Tahrirlash* orqali o‘zgartirishingiz mumkin.",
+            parse_mode="Markdown",
+        )
+
     if not isinstance(context.user_data.get("amount_uzs"), int):
         await msg.reply_text(
             "🧾 *Kiritish — 4/7*\n"
@@ -806,5 +816,3 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
-
-
