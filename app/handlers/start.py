@@ -1,19 +1,33 @@
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+﻿from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
-from ..config import ADMIN_IDS
+from ..config import ADMIN_IDS, APP_MODE
 
 
 def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
-    # Operator: faqat 2 ta tugma
     if is_logged:
+        if APP_MODE == "order_bot":
+            return ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton("/kiritish")]],
+                resize_keyboard=True,
+                one_time_keyboard=False,
+                selective=True,
+            )
+
+        if APP_MODE == "confirm_bot":
+            return ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
+                resize_keyboard=True,
+                one_time_keyboard=False,
+                selective=True,
+            )
+
         return ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq")]],
+            keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
             resize_keyboard=True,
             one_time_keyboard=False,
             selective=True,
         )
 
-    # Admin: admin panel + login
     if is_admin:
         return ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton("/admin")], [KeyboardButton("/login")], [KeyboardButton("/start")]],
@@ -22,7 +36,6 @@ def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
             selective=True,
         )
 
-    # Mehmon: faqat login
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton("/login")], [KeyboardButton("/start")]],
         resize_keyboard=True,
@@ -37,7 +50,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_logged = bool(context.user_data.get("operator"))
 
     if is_logged:
-        text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang: /kiritish yoki /tasdiq."
+        if APP_MODE == "order_bot":
+            text = "✅ Xush kelibsiz. Kerakli bo‘lim: /kiritish."
+        elif APP_MODE == "confirm_bot":
+            text = "✅ Xush kelibsiz. Kerakli bo‘limlar: /tasdiq yoki /takror."
+        else:
+            text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang: /kiritish, /tasdiq yoki /takror."
     elif is_admin:
         text = "🛠 Admin. /admin orqali operatorlarni boshqarasiz. Operator sifatida ishlash uchun /login ham bor."
     else:
