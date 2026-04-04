@@ -1,4 +1,4 @@
-# app/handlers/confirm.py
+﻿# app/handlers/confirm.py
 import os
 import re
 import copy
@@ -89,16 +89,11 @@ CONFIRM_STORE_NAME = "Abusahiy 75"
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton("/kiritish"),
-            KeyboardButton("/tasdiq"),
-            KeyboardButton("/takror"),
-        ]],
+        keyboard=[[KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=True,
     )
-
 
 def _review_kb(has_batch: bool = False) -> InlineKeyboardMarkup:
     rows = [
@@ -1472,3 +1467,4 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
+

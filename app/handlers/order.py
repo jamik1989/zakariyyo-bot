@@ -40,16 +40,11 @@ MS_TZ = ZoneInfo(os.getenv("MOYSKLAD_TZ", "Europe/Moscow"))
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton("/kiritish"),
-            KeyboardButton("/tasdiq"),
-            KeyboardButton("/takror"),
-        ]],
+        keyboard=[[KeyboardButton("/kiritish")]],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=True,
     )
-
 
 def _paytype_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -811,3 +806,5 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
+
+
