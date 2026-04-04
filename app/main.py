@@ -1,5 +1,4 @@
-﻿# app/main.py
-import logging
+﻿import logging
 import sys
 
 from telegram.error import Conflict
@@ -12,11 +11,10 @@ from telegram.ext import (
     filters,
 )
 
-from .config import BOT_TOKEN, APP_MODE
+from .config import BOT_TOKEN
 from .db import init_db
 from .handlers.start import start
 
-# ===== AUTH =====
 from .handlers.auth import (
     register_start,
     register_phone,
@@ -33,7 +31,6 @@ from .handlers.auth import (
     cancel as cancel_auth,
 )
 
-# ===== ORDER (kiritish) =====
 from .handlers.order import (
     kiritish_start,
     on_paytype_chosen,
@@ -54,7 +51,6 @@ from .handlers.order import (
     cancel as cancel_order,
 )
 
-# ===== CONFIRM (tasdiq) =====
 from .handlers.confirm import (
     tasdiq_start,
     on_new_confirm_click,
@@ -78,6 +74,8 @@ from .handlers.confirm import (
     on_time_text,
     on_edit_choose,
     on_edit_value,
+    on_forward_template_message,
+    on_forward_template_action,
     CF_PICK,
     CF_NEW_CLICK,
     CF_CP_SEARCH,
@@ -100,21 +98,6 @@ from .handlers.confirm import (
     cancel as cancel_confirm,
 )
 
-# ===== TAKROR =====
-from .handlers.takror import (
-    takror_start,
-    takror_search_text,
-    takror_pick_product,
-    takror_extra_text,
-    takror_qty_text,
-    TK_SEARCH,
-    TK_PICK,
-    TK_EXTRA,
-    TK_QTY,
-    cancel as cancel_takror,
-)
-
-# ===== ADMIN =====
 from .handlers.admin import (
     admin_start,
     admin_menu_click,
@@ -130,6 +113,19 @@ from .handlers.admin import (
     AD_DEL_PHONE,
 )
 
+from .handlers.takror import (
+    takror_start,
+    takror_search_text,
+    takror_pick_product,
+    takror_extra_text,
+    takror_qty_text,
+    TK_SEARCH,
+    TK_PICK,
+    TK_EXTRA,
+    TK_QTY,
+    cancel as cancel_takror,
+)
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -141,21 +137,12 @@ async def on_error(update, context):
     logger.exception("Unhandled exception. update=%s", update, exc_info=context.error)
 
 
-def _is_order_mode() -> bool:
-    return APP_MODE in ("order_bot", "all_in_one")
-
-
-def _is_confirm_mode() -> bool:
-    return APP_MODE in ("confirm_bot", "all_in_one")
-
-
 def build_app() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_error_handler(on_error)
 
     application.add_handler(CommandHandler("start", start))
 
-    # ================= AUTH =================
     register_conv = ConversationHandler(
         entry_points=[CommandHandler("register", register_start)],
         states={
@@ -181,7 +168,6 @@ def build_app() -> Application:
     )
     application.add_handler(login_conv)
 
-    # ================= ADMIN =================
     admin_conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_start)],
         states={
@@ -197,81 +183,88 @@ def build_app() -> Application:
     )
     application.add_handler(admin_conv)
 
-    # ================= ORDER (/kiritish) =================
-    if _is_order_mode():
-        order_conv = ConversationHandler(
-            entry_points=[CommandHandler("kiritish", kiritish_start)],
-            states={
-                STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
-                STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
-                STEP_CP_PICK: [
-                    CallbackQueryHandler(order_on_cp_pick, pattern=r"^cp:"),
-                    CallbackQueryHandler(order_on_cp_create_new, pattern=r"^cpnew:"),
-                ],
-                STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
-                STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
-                STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
-                STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
-            },
-            fallbacks=[CommandHandler("cancel", cancel_order)],
-            allow_reentry=True,
-            per_message=False,
-        )
-        application.add_handler(order_conv)
+    order_conv = ConversationHandler(
+        entry_points=[CommandHandler("kiritish", kiritish_start)],
+        states={
+            STEP_PAYTYPE: [CallbackQueryHandler(on_paytype_chosen, pattern=r"^pt:")],
+            STEP_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, cp_search_text)],
+            STEP_CP_PICK: [
+                CallbackQueryHandler(order_on_cp_pick, pattern=r"^cp:"),
+                CallbackQueryHandler(order_on_cp_create_new, pattern=r"^cpnew:"),
+            ],
+            STEP_AMOUNT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_amount_date)],
+            STEP_CHECK: [MessageHandler(filters.PHOTO | filters.Document.PDF, handle_check_optional)],
+            STEP_CHANNEL: [CallbackQueryHandler(on_sales_channel_chosen, pattern=r"^sc:")],
+            STEP_REVIEW: [CallbackQueryHandler(on_review_action, pattern=r"^rv:")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_order)],
+        allow_reentry=True,
+        per_message=False,
+    )
+    application.add_handler(order_conv)
 
-    # ================= CONFIRM (/tasdiq) =================
-    if _is_confirm_mode():
-        confirm_conv = ConversationHandler(
-            entry_points=[CommandHandler("tasdiq", tasdiq_start)],
-            states={
-                CF_PICK: [
-                    CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:"),
-                    CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
-                ],
-                CF_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_cp_search_text)],
-                CF_CP_PICK: [CallbackQueryHandler(confirm_on_cp_pick, pattern=r"^cfcp:")],
-                CF_BRAND_ONLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
-                CF_NEW_CLICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
-                CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
-                CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
-                CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
-                CF_BG: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_bg)],
-                CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
-                CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
-                CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
-                CF_CHANNEL: [
-                    CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:"),
-                    CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),
-                ],
-                CF_GROUP: [
-                    CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
-                    CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
-                ],
-                CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
-                CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
-                CF_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_time_text)],
-                CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
-                CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel_confirm)],
-            allow_reentry=True,
-            per_message=False,
-        )
-        application.add_handler(confirm_conv)
+    confirm_conv = ConversationHandler(
+        entry_points=[CommandHandler("tasdiq", tasdiq_start)],
+        states={
+            CF_PICK: [
+                CallbackQueryHandler(on_new_confirm_click, pattern=r"^cfnew:"),
+                CallbackQueryHandler(on_pick, pattern=r"^cfpick:"),
+            ],
+            CF_CP_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_cp_search_text)],
+            CF_CP_PICK: [CallbackQueryHandler(confirm_on_cp_pick, pattern=r"^cfcp:")],
+            CF_BRAND_ONLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+            CF_NEW_CLICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_new_confirm_cp)],
+            CF_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo)],
+            CF_KIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_kind)],
+            CF_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_size)],
+            CF_BG: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_bg)],
+            CF_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_text)],
+            CF_QM: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qm)],
+            CF_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_qty)],
+            CF_CHANNEL: [
+                CallbackQueryHandler(on_channel_pick, pattern=r"^cfsc:"),
+                CallbackQueryHandler(on_channel_force, pattern=r"^cfscforce:"),
+            ],
+            CF_GROUP: [
+                CallbackQueryHandler(on_groups_page, pattern=r"^cfgp:"),
+                CallbackQueryHandler(on_group_pick, pattern=r"^cfg:"),
+            ],
+            CF_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_price)],
+            CF_REVIEW: [CallbackQueryHandler(on_review, pattern=r"^cfr:")],
+            CF_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_time_text)],
+            CF_EDIT_CHOOSE: [CallbackQueryHandler(on_edit_choose, pattern=r"^cfe:")],
+            CF_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_edit_value)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_confirm)],
+        allow_reentry=True,
+        per_message=False,
+    )
+    application.add_handler(confirm_conv)
 
-        takror_conv = ConversationHandler(
-            entry_points=[CommandHandler("takror", takror_start)],
-            states={
-                TK_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_search_text)],
-                TK_PICK: [CallbackQueryHandler(takror_pick_product, pattern=r"^tkp:")],
-                TK_EXTRA: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_extra_text)],
-                TK_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_qty_text)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel_takror)],
-            allow_reentry=True,
-            per_message=False,
+    takror_conv = ConversationHandler(
+        entry_points=[CommandHandler("takror", takror_start)],
+        states={
+            TK_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_search_text)],
+            TK_PICK: [CallbackQueryHandler(takror_pick_product, pattern=r"^tkp:")],
+            TK_EXTRA: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_extra_text)],
+            TK_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_qty_text)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_takror)],
+        allow_reentry=True,
+        per_message=False,
+    )
+    application.add_handler(takror_conv)
+
+    application.add_handler(
+        MessageHandler(
+            (filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND,
+            on_forward_template_message,
         )
-        application.add_handler(takror_conv)
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(on_forward_template_action, pattern=r"^fwdc:")
+    )
 
     return application
 
@@ -280,7 +273,7 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN topilmadi. Railway yoki .env ga kiriting.")
 
-    logger.info("🚀 Bot ishga tushmoqda... APP_MODE=%s", APP_MODE)
+    logger.info("🚀 Bot ishga tushmoqda...")
     init_db()
 
     app = build_app()

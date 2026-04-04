@@ -1,5 +1,4 @@
-﻿# app/handlers/confirm.py
-import os
+﻿import os
 import re
 import copy
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Optional, List, Dict, Any, Tuple
 
 from telegram import (
     Update,
+    Message,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
@@ -95,6 +95,7 @@ def _menu_keyboard() -> ReplyKeyboardMarkup:
         selective=True,
     )
 
+
 def _review_kb(has_batch: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("✅ Tasdiqlash (MoySklad + Kanal)", callback_data="cfr:send")],
@@ -168,7 +169,6 @@ def _item_abbr3(item_type: str) -> str:
 
 def _norm_group_name(s: str) -> str:
     s = (s or "").strip().lower()
-    s = s.replace("‘", "'").replace("`", "'").replace("ʻ", "'")
     s = re.sub(r"\s+", " ", s)
     return s
 
@@ -197,7 +197,7 @@ def _parse_qty_and_unit(text: str) -> Tuple[Optional[int], str, str]:
         return qty, "rulon", "рулон"
     if unit in ("kg", "кг"):
         return qty, "kg", "кг"
-    if unit in ("m", "metr", "meter", "metre", "м"):
+    if unit in ("m", "metr", "метр", "м"):
         return qty, "m", "м"
 
     return qty, (unit or ""), (unit or "")
@@ -244,16 +244,7 @@ def _clone_item_for_batch(d: Dict[str, Any]) -> Dict[str, Any]:
     return {k: copy.deepcopy(d.get(k)) for k in keep_keys}
 
 
-def _reset_item_fields_keep_cp_brand_channel(d: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Batch ichida keyingi buyurtma uchun:
-    - brand/CP saqlanadi
-    - channel saqlanadi
-    - qolgan item fieldlar tozalanadi
-    """
-    keep_sc_meta = d.get("sales_channel_meta")
-    keep_sc_name = d.get("sales_channel_name")
-
+def _reset_item_fields_keep_cp_brand(d: Dict[str, Any]) -> Dict[str, Any]:
     d["image_path"] = ""
     d["item_type"] = ""
     d["size"] = ""
@@ -264,29 +255,21 @@ def _reset_item_fields_keep_cp_brand_channel(d: Dict[str, Any]) -> Dict[str, Any
     d["qty_unit_lat"] = ""
     d["qty_unit_ru"] = ""
     d["price_uzs"] = None
+    d["sales_channel_meta"] = None
+    d["sales_channel_name"] = ""
     d["group_meta"] = None
     d["group_name"] = ""
-
-    d["sales_channel_meta"] = keep_sc_meta
-    d["sales_channel_name"] = keep_sc_name
     return d
 
 
 def _item_is_complete(it: Dict[str, Any]) -> bool:
     try:
         return (
-            bool(it.get("item_type"))
-            and bool(it.get("size"))
-            and bool(it.get("bg_color"))
-            and bool(it.get("text_color"))
-            and isinstance(it.get("qty"), int)
-            and it.get("qty") > 0
-            and isinstance(it.get("price_uzs"), int)
-            and it.get("price_uzs") > 0
-            and bool(it.get("sales_channel_meta"))
-            and bool(it.get("group_meta"))
-            and bool(it.get("image_path"))
-            and os.path.exists(it.get("image_path"))
+            bool(it.get("item_type")) and bool(it.get("size")) and bool(it.get("bg_color")) and bool(it.get("text_color"))
+            and isinstance(it.get("qty"), int) and it.get("qty") > 0
+            and isinstance(it.get("price_uzs"), int) and it.get("price_uzs") > 0
+            and bool(it.get("sales_channel_meta")) and bool(it.get("group_meta"))
+            and bool(it.get("image_path")) and os.path.exists(it.get("image_path"))
         )
     except Exception:
         return False
@@ -294,15 +277,10 @@ def _item_is_complete(it: Dict[str, Any]) -> bool:
 
 def _get_locked_batch_channel(context: ContextTypes.DEFAULT_TYPE):
     batch = context.user_data.get("confirm_batch") or []
-    if batch:
-        first = batch[0] or {}
-        return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
-
-    d = context.user_data.get("confirm_data") or {}
-    if d.get("sales_channel_meta"):
-        return d.get("sales_channel_meta"), (d.get("sales_channel_name") or "")
-
-    return None, ""
+    if not batch:
+        return None, ""
+    first = batch[0] or {}
+    return first.get("sales_channel_meta"), (first.get("sales_channel_name") or "")
 
 
 def _tg_now_as_ms_moment() -> str:
@@ -331,9 +309,10 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     img_ok = bool(d.get("image_path") and os.path.exists(d["image_path"]))
     img = "BOR ✅" if img_ok else "YO‘Q ❌"
 
+    unit_lat = (d.get("qty_unit_lat") or "").strip()
     qty_show = _fmt_int(d.get("qty"))
-    if d.get("qty_unit_ru"):
-        qty_show = f"{qty_show} {d.get('qty_unit_ru')}"
+    if unit_lat:
+        qty_show = f"{qty_show} {unit_lat}"
 
     moment_iso = (d.get("moment_iso_override") or "").strip()
     if not moment_iso:
@@ -367,60 +346,6 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
     )
 
 
-def _build_item_line_for_desc(idx: int, total: int, it: Dict[str, Any]) -> str:
-    qty_ru = _fmt_int(it.get("qty"))
-    if it.get("qty_unit_ru"):
-        qty_ru = f"{qty_ru} {it.get('qty_unit_ru')}"
-    return (
-        f"{idx}/{total}) "
-        f"MT:{it.get('item_type')} | "
-        f"R:{it.get('size')} | "
-        f"F:{it.get('bg_color')} | "
-        f"TI:{it.get('text_color')} | "
-        f"S:{qty_ru} | "
-        f"QM:{it.get('qm_note') or '-'} | "
-        f"Narx:{it.get('price_uzs')} | "
-        f"Group:{it.get('group_name')}"
-    )
-
-
-def _build_channel_caption(
-    *,
-    idx: int,
-    total: int,
-    brand: str,
-    item: Dict[str, Any],
-    operator_name: str,
-    moment_iso: str,
-    order_name: str,
-) -> str:
-    qty_show = _fmt_int(item.get("qty"))
-    unit_ru = (item.get("qty_unit_ru") or "").strip()
-    if unit_ru:
-        qty_show = f"{qty_show} {unit_ru}"
-
-    qm = (item.get("qm_note") or "").strip()
-    qm_show = qm if qm else "-"
-
-    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
-
-    return "\n".join([
-        f"📦 Buyurtma: {idx}/{total}",
-        f"🏷 {brand}",
-        f"🧾 {item.get('item_type')}",
-        f"📏 {item.get('size')}",
-        f"🎨 {item.get('bg_color')}",
-        f"🔤 {item.get('text_color')}",
-        f"🔢 {qty_show}",
-        f"📝 {qm_show}",
-        "",
-        f"👨‍💼 {operator_name}",
-        f"🕒 {moment_show}",
-        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
-        f"🧾 MS: {order_name}",
-    ])
-
-
 async def on_channel_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -444,14 +369,6 @@ async def on_channel_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
-    locked_meta, locked_name = _get_locked_batch_channel(context)
-    if locked_meta:
-        d = context.user_data.get("confirm_data") or {}
-        d["sales_channel_meta"] = locked_meta
-        d["sales_channel_name"] = locked_name
-        context.user_data["confirm_data"] = d
-        return await _ask_product_group(update_obj, context, page=0)
-
     channels = get_sales_channels(limit=300)
     if not channels:
         msg = "❌ MoySklad’da 'Канал продаж' topilmadi."
@@ -467,10 +384,13 @@ async def _ask_sales_channel(update_obj, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"cfsc:{c['id']}")] for c in channels]
     markup = InlineKeyboardMarkup(kb)
 
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    hint = f"\n\n🔒 Batch kanali: {locked_name}" if locked_meta and locked_name else ""
+
     if hasattr(update_obj, "edit_message_text"):
-        await update_obj.edit_message_text("📊 KL (Kanal) ni tanlang:", reply_markup=markup)
+        await update_obj.edit_message_text("📊 KL (Kanal) ni tanlang:" + hint, reply_markup=markup)
     else:
-        await update_obj.reply_text("📊 KL (Kanal) ni tanlang:", reply_markup=markup)
+        await update_obj.reply_text("📊 KL (Kanal) ni tanlang:" + hint, reply_markup=markup)
 
     return CF_CHANNEL
 
@@ -1049,10 +969,31 @@ async def on_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chosen_meta = ch.get("meta")
     chosen_name = ch.get("name") or ""
 
-    d = context.user_data["confirm_data"]
-    d["sales_channel_meta"] = chosen_meta
-    d["sales_channel_name"] = chosen_name
-    context.user_data["confirm_data"] = d
+    locked_meta, locked_name = _get_locked_batch_channel(context)
+    if locked_meta and chosen_meta != locked_meta:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Davom etish", callback_data="cfscforce:ok")],
+            [InlineKeyboardButton("🔄 Qayta tanlash", callback_data="cfscforce:retry")],
+        ])
+        await q.edit_message_text(
+            "⚠️ Batchda KL (Kanal) bitta bo‘lishi kerak.\n\n"
+            f"✅ Siz shu kanalni tanlagansiz: {locked_name}\n"
+            f"❗ Siz hozir bosdingiz: {chosen_name}\n\n"
+            "✅ Davom etish bosilsa, batchdagi kanal bilan davom etadi.",
+            reply_markup=kb
+        )
+        return CF_CHANNEL
+
+    if locked_meta:
+        d = context.user_data["confirm_data"]
+        d["sales_channel_meta"] = locked_meta
+        d["sales_channel_name"] = locked_name
+        context.user_data["confirm_data"] = d
+    else:
+        d = context.user_data["confirm_data"]
+        d["sales_channel_meta"] = chosen_meta
+        d["sales_channel_name"] = chosen_name
+        context.user_data["confirm_data"] = d
 
     return await _ask_product_group(q, context, page=0)
 
@@ -1106,6 +1047,42 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
+def _build_channel_caption(
+    *,
+    idx: int,
+    total: int,
+    brand: str,
+    item: Dict[str, Any],
+    sc_name: str,
+    operator_name: str,
+    moment_iso: str,
+    order_name: str,
+) -> str:
+    unit_ru = (item.get("qty_unit_ru") or "").strip()
+    unit_show = unit_ru or (item.get("qty_unit_lat") or "").strip()
+    qty_show = f"{item.get('qty')}{(' ' + unit_show) if unit_show else ''}"
+    qm = (item.get("qm_note") or "").strip()
+    qm_show = qm if qm else "-"
+
+    moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
+
+    return "\n".join([
+        f"📦 Buyurtma: {idx}/{total}",
+        f"🏷 B: {brand}",
+        f"🧾 {item.get('item_type')}",
+        f"📏 {item.get('size')}",
+        f"🎨 {item.get('bg_color')}",
+        f"🔤 {item.get('text_color')}",
+        f"🔢 {qty_show}",
+        f"📝 Q.M: {qm_show}",
+        f"📊 KL: {sc_name}",
+        f"👨‍💼 OR: {operator_name}",
+        f"🕒 Vaqt: {moment_show}",
+        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
+        f"🧾 MS: {order_name}",
+    ])
+
+
 async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1140,7 +1117,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         batch.append(_clone_item_for_batch(d))
         context.user_data["confirm_batch"] = batch
 
-        context.user_data["confirm_data"] = _reset_item_fields_keep_cp_brand_channel(d)
+        context.user_data["confirm_data"] = _reset_item_fields_keep_cp_brand(d)
 
         await q.edit_message_text(
             f"✅ Buyurtma batchga qo‘shildi.\n"
@@ -1185,7 +1162,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sc_name = items[-1].get("sales_channel_name") or ""
 
     for it in items:
-        if not it.get("sales_channel_meta"):
+        if it.get("sales_channel_meta") != sc_meta:
             it["sales_channel_meta"] = sc_meta
             it["sales_channel_name"] = sc_name
 
@@ -1200,22 +1177,23 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pt_meta:
             pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
 
+        created_orders: List[Dict[str, Any]] = []
         total = len(items)
-
-        positions: List[Dict[str, Any]] = []
-        item_product_ids: List[str] = []
-
-        desc_lines = [
-            f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}"
-        ]
 
         for idx, it in enumerate(items, start=1):
             if not _item_is_complete(it):
                 raise RuntimeError("Batch ichida to‘liq bo‘lmagan buyurtma bor (rasm/maydonlar).")
 
-            desc_lines.append(_build_item_line_for_desc(idx, total, it))
-
             unit_ru = (it.get("qty_unit_ru") or "").strip()
+            qty_ru = f"{it.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
+
+            desc = "\n".join([
+                f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
+                f"Item: {idx}/{total}",
+                f"MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
+                f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
+            ])
+
             abbr = _item_abbr3(it.get("item_type") or "")
             product_name = f"{brand} {abbr} {it.get('size')}".strip()
 
@@ -1232,11 +1210,10 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prod_id = str(prod.get("id") or "")
             prod_meta = prod.get("meta")
 
-            item_product_ids.append(prod_id)
-
             if prod_id:
                 attach_image_to_product(prod_id, it.get("image_path"))
 
+            positions: List[Dict[str, Any]] = []
             if prod_meta:
                 positions.append({
                     "assortment": {"meta": prod_meta},
@@ -1244,44 +1221,40 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "price": int(it.get("price_uzs")) * 100,
                 })
 
-        desc = "\n".join(desc_lines)
+            order = create_customerorder(
+                organization_meta=org["meta"],
+                agent_meta=cp_meta,
+                sales_channel_meta=sc_meta,
+                store_meta=store_meta,
+                moment_iso=moment_iso,
+                description=desc,
+                positions=positions,
+            )
+            order_id = str(order.get("id") or "")
 
-        order = create_customerorder(
-            organization_meta=org["meta"],
-            agent_meta=cp_meta,
-            sales_channel_meta=sc_meta,
-            store_meta=store_meta,
-            moment_iso=moment_iso,
-            description=desc,
-            positions=positions,
-        )
-
-        order_id = str(order.get("id") or "")
-        order_name = order.get("name", "N/A")
-
-        if order_id:
-            # birinchi rasmni orderga asosiy ilova sifatida biriktirib qo'yamiz
-            first_img = items[0].get("image_path")
-            if first_img:
+            if order_id:
                 try:
-                    attach_file_to_customerorder(order_id, first_img)
-                except Exception:
-                    pass
-                try:
-                    attach_image_to_customerorder(order_id, first_img)
+                    attach_file_to_customerorder(order_id, it.get("image_path"))
                 except Exception:
                     pass
 
-        if CONFIRM_CHAT_ID:
-            for idx, it in enumerate(items, start=1):
+                try:
+                    attach_image_to_customerorder(order_id, it.get("image_path"))
+                except Exception:
+                    pass
+
+            created_orders.append(order)
+
+            if CONFIRM_CHAT_ID:
                 caption = _build_channel_caption(
                     idx=idx,
                     total=total,
                     brand=brand,
                     item=it,
+                    sc_name=sc_name,
                     operator_name=op.get("name"),
                     moment_iso=moment_iso,
-                    order_name=order_name,
+                    order_name=order.get("name", "N/A"),
                 )
                 with open(it.get("image_path"), "rb") as f:
                     await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
@@ -1295,7 +1268,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=q.message.chat_id,
-            text=f"✅ Buyurtma(lar) qabul qilindi. MoySklad’da 1 ta buyurtma va {len(positions)} ta position yaratildi.",
+            text=f"✅ Buyurtma(lar) qabul qilindi. MoySklad’da {len(created_orders)} ta buyurtma yaratildi.",
             reply_markup=_menu_keyboard(),
         )
 
@@ -1439,18 +1412,6 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif key == "channel":
         context.user_data.pop("edit_key", None)
-        # batch ichida qayta channel so'ralmasin:
-        locked_meta, locked_name = _get_locked_batch_channel(context)
-        if locked_meta:
-            d["sales_channel_meta"] = locked_meta
-            d["sales_channel_name"] = locked_name
-            context.user_data["confirm_data"] = d
-            await update.message.reply_text(
-                _render_review(context),
-                reply_markup=_review_kb(bool(context.user_data.get("confirm_batch")))
-            )
-            return CF_REVIEW
-
         await update.message.reply_text("📊 KL (Kanal) ni tanlaymiz...")
         return await _ask_sales_channel(update.message, context)
 
@@ -1464,7 +1425,257 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
+def _extract_forward_order_data(caption: str) -> Optional[Dict[str, Any]]:
+    text = (caption or "").strip()
+    if not text:
+        return None
+
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    if not lines:
+        return None
+
+    first = lines[0]
+    low_first = first.lower()
+
+    if "#tasdiq" not in low_first and "#takror" not in low_first:
+        return None
+
+    tag = "tasdiq" if "#tasdiq" in low_first else "takror"
+
+    brand = re.sub(r"(?i)#tasdiq|#takror", "", first).strip()
+    if not brand:
+        brand = "N/A"
+
+    body = lines[1:]
+
+    item_type = body[0] if len(body) >= 1 else ""
+    size = body[1] if len(body) >= 2 else ""
+
+    qty = None
+    qty_unit_lat = ""
+    qty_unit_ru = ""
+
+    qty_idx = -1
+    for i in range(len(body) - 1, -1, -1):
+        q, ul, ur = _parse_qty_and_unit(body[i])
+        if q:
+            qty = q
+            qty_unit_lat = ul
+            qty_unit_ru = ur
+            qty_idx = i
+            break
+
+    qm_lines: List[str] = []
+    if len(body) >= 3:
+        start_idx = 2
+        end_idx = qty_idx if qty_idx >= 0 else len(body)
+        qm_lines = body[start_idx:end_idx]
+
+    qm_note = " | ".join([x for x in qm_lines if x.strip()])
+
+    return {
+        "tag": tag,
+        "brand": brand,
+        "item_type": item_type,
+        "size": size,
+        "qm_note": qm_note,
+        "qty": qty,
+        "qty_unit_lat": qty_unit_lat,
+        "qty_unit_ru": qty_unit_ru,
+    }
+
+
+def _build_forward_preview_text(d: Dict[str, Any]) -> str:
+    qty_show = _fmt_int(d.get("qty"))
+    unit_lat = (d.get("qty_unit_lat") or "").strip()
+    if unit_lat:
+        qty_show = f"{qty_show} {unit_lat}"
+
+    return (
+        "📥 Forward buyurtma topildi\n\n"
+        f"🏷 B: {d.get('brand') or 'N/A'}\n"
+        f"🧾 M.T: {d.get('item_type') or 'N/A'}\n"
+        f"📏 R: {d.get('size') or 'N/A'}\n"
+        f"📝 Q.M: {d.get('qm_note') or '-'}\n"
+        f"🔢 S: {qty_show}\n"
+        f"🔖 Tip: #{d.get('tag')}\n\n"
+        "MoySkladga yuborilsinmi?"
+    )
+
+
+def _forward_review_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Tasdiqlash", callback_data="fwdc:send")],
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="fwdc:cancel")],
+    ])
+
+
+async def _save_forward_image(msg: Message) -> Optional[str]:
+    img_path = TMP_DIR / f"forward_{msg.message_id}.jpg"
+
+    if msg.photo:
+        file = await msg.photo[-1].get_file()
+        await file.download_to_drive(str(img_path))
+        return str(img_path)
+
+    if msg.document and (msg.document.mime_type or "").startswith("image/"):
+        file = await msg.document.get_file()
+        await file.download_to_drive(str(img_path))
+        return str(img_path)
+
+    return None
+
+
+async def on_forward_template_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg:
+        return
+
+    if not context.user_data.get("operator"):
+        return
+
+    caption = (msg.caption or "").strip()
+    if not caption:
+        return
+
+    parsed = _extract_forward_order_data(caption)
+    if not parsed:
+        return
+
+    image_path = await _save_forward_image(msg)
+    if not image_path:
+        await msg.reply_text("❌ Forward qilingan xabarda rasm topilmadi.")
+        return
+
+    context.user_data["forward_order_data"] = {
+        **parsed,
+        "image_path": image_path,
+    }
+
+    await msg.reply_text(
+        _build_forward_preview_text(context.user_data["forward_order_data"]),
+        reply_markup=_forward_review_kb(),
+    )
+
+
+async def on_forward_template_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    action = (q.data or "").split("fwdc:", 1)[-1]
+    d = context.user_data.get("forward_order_data") or {}
+
+    if action == "cancel":
+        context.user_data.pop("forward_order_data", None)
+        await q.edit_message_text("❌ Forward buyurtma bekor qilindi.")
+        return
+
+    if action != "send":
+        return
+
+    op = context.user_data.get("operator") or {}
+    op_id = int(op.get("id") or 0)
+
+    if not op_id:
+        await q.edit_message_text("❌ Operator aniqlanmadi.")
+        return
+
+    latest = list_open_confirms(op_id, limit=1)
+    if not latest:
+        await q.edit_message_text(
+            "❌ Avval /tasdiq orqali mijozni ochib oling.\n"
+            "Forward buyurtma uchun OPEN confirm topilmadi."
+        )
+        context.user_data.pop("forward_order_data", None)
+        return
+
+    confirm_ctx = latest[0]
+    cp_meta = confirm_ctx.get("counterparty_meta") or {}
+    brand = (d.get("brand") or confirm_ctx.get("brand") or "").strip()
+    image_path = d.get("image_path") or ""
+
+    if not cp_meta:
+        await q.edit_message_text("❌ Kontragent meta topilmadi.")
+        context.user_data.pop("forward_order_data", None)
+        return
+
+    try:
+        org = get_default_organization()
+
+        store_meta = find_store_meta_by_name(CONFIRM_STORE_NAME)
+        if not store_meta:
+            raise RuntimeError(f"Склад topilmadi: '{CONFIRM_STORE_NAME}'")
+
+        moment_iso = _tg_now_as_ms_moment()
+
+        unit_ru = (d.get("qty_unit_ru") or "").strip()
+        qty_ru = f"{d.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
+
+        desc = "\n".join([
+            f"[BOT FORWARD {str(d.get('tag') or '').upper()}] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
+            f"MT:{d.get('item_type') or '-'}",
+            f"R:{d.get('size') or '-'}",
+            f"QM:{d.get('qm_note') or '-'}",
+            f"S:{qty_ru or '-'}",
+        ])
+
+        order = create_customerorder(
+            organization_meta=org["meta"],
+            agent_meta=cp_meta,
+            sales_channel_meta=None,
+            store_meta=store_meta,
+            moment_iso=moment_iso,
+            description=desc,
+            positions=[],
+        )
+
+        order_id = str(order.get("id") or "")
+        if order_id and image_path and os.path.exists(image_path):
+            try:
+                attach_file_to_customerorder(order_id, image_path)
+            except Exception:
+                pass
+
+            try:
+                attach_image_to_customerorder(order_id, image_path)
+            except Exception:
+                pass
+
+        if CONFIRM_CHAT_ID:
+            moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
+
+            qty_show = _fmt_int(d.get("qty"))
+            unit_lat = (d.get("qty_unit_lat") or "").strip()
+            if unit_lat:
+                qty_show = f"{qty_show} {unit_lat}"
+
+            caption = "\n".join([
+                f"📥 Forward #{d.get('tag')}",
+                f"🏷 B: {brand}",
+                f"🧾 {d.get('item_type') or '-'}",
+                f"📏 {d.get('size') or '-'}",
+                f"📝 {d.get('qm_note') or '-'}",
+                f"🔢 {qty_show}",
+                f"👨‍💼 OR: {op.get('name')}",
+                f"🕒 Vaqt: {moment_show}",
+                f"🏬 Sklad: {CONFIRM_STORE_NAME}",
+                f"🧾 MS: {order.get('name', 'N/A')}",
+            ])
+
+            if image_path and os.path.exists(image_path):
+                with open(image_path, "rb") as f:
+                    await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
+            else:
+                await context.bot.send_message(chat_id=CONFIRM_CHAT_ID, text=caption)
+
+        context.user_data.pop("forward_order_data", None)
+        await q.edit_message_text("✅ Forward buyurtma MoySkladga yuborildi.")
+
+    except Exception as e:
+        await q.edit_message_text(f"❌ Forward buyurtmani yuborishda xatolik: {e}")
+        context.user_data.pop("forward_order_data", None)
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bekor qilindi.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
-
