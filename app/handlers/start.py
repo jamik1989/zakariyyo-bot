@@ -4,6 +4,7 @@ from ..config import ADMIN_IDS, APP_MODE
 
 
 def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
+    # Operator bo'lsa — bot turiga qarab menyu
     if is_logged:
         if APP_MODE == "order_bot":
             return ReplyKeyboardMarkup(
@@ -21,6 +22,7 @@ def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
                 selective=True,
             )
 
+        # fallback
         return ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
             resize_keyboard=True,
@@ -28,6 +30,7 @@ def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
             selective=True,
         )
 
+    # Admin bo'lsa
     if is_admin:
         return ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton("/admin")], [KeyboardButton("/login")], [KeyboardButton("/start")]],
@@ -36,6 +39,7 @@ def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
             selective=True,
         )
 
+    # Login qilmagan oddiy user
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton("/login")], [KeyboardButton("/start")]],
         resize_keyboard=True,
@@ -51,11 +55,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_logged:
         if APP_MODE == "order_bot":
-            text = "✅ Xush kelibsiz. Kerakli bo‘lim: /kiritish."
+            text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang: /kiritish."
         elif APP_MODE == "confirm_bot":
-            text = "✅ Xush kelibsiz. Kerakli bo‘limlar: /tasdiq yoki /takror."
+            text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang: /tasdiq yoki /takror."
         else:
-            text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang: /kiritish, /tasdiq yoki /takror."
+            text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang."
     elif is_admin:
         text = "🛠 Admin. /admin orqali operatorlarni boshqarasiz. Operator sifatida ishlash uchun /login ham bor."
     else:
