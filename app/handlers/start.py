@@ -1,18 +1,38 @@
 ﻿from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
-from ..config import APP_MODE
+from ..config import ADMIN_IDS, APP_MODE
 
 
-def _menu_keyboard() -> ReplyKeyboardMarkup:
-    if APP_MODE == "order_bot":
+def _menu_keyboard(is_logged: bool, is_admin: bool) -> ReplyKeyboardMarkup:
+    mode = (APP_MODE or "").strip().lower()
+
+    # ===== ORDER BOT =====
+    if mode == "order":
+        if is_logged:
+            return ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton("/kiritish")]],
+                resize_keyboard=True,
+                one_time_keyboard=False,
+                selective=True,
+            )
+
+        if is_admin:
+            return ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton("/admin")], [KeyboardButton("/login")], [KeyboardButton("/start")]],
+                resize_keyboard=True,
+                one_time_keyboard=False,
+                selective=True,
+            )
+
         return ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton("/kiritish")]],
+            keyboard=[[KeyboardButton("/login")], [KeyboardButton("/start")]],
             resize_keyboard=True,
             one_time_keyboard=False,
             selective=True,
         )
 
-    if APP_MODE == "confirm_bot":
+    # ===== CONFIRM BOT =====
+    if is_logged:
         return ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
             resize_keyboard=True,
@@ -20,8 +40,16 @@ def _menu_keyboard() -> ReplyKeyboardMarkup:
             selective=True,
         )
 
+    if is_admin:
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton("/admin")], [KeyboardButton("/login")], [KeyboardButton("/start")]],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+            selective=True,
+        )
+
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("/kiritish"), KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
+        keyboard=[[KeyboardButton("/login")], [KeyboardButton("/start")]],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=True,
@@ -29,11 +57,24 @@ def _menu_keyboard() -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if APP_MODE == "order_bot":
-        text = "✅ Xush kelibsiz. Kerakli bo‘lim: /kiritish."
-    elif APP_MODE == "confirm_bot":
-        text = "✅ Xush kelibsiz. Kerakli bo‘limlar: /tasdiq yoki /takror."
-    else:
-        text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang."
+    uid = getattr(update.effective_user, "id", None)
+    is_admin = uid in ADMIN_IDS
+    is_logged = bool(context.user_data.get("operator"))
+    mode = (APP_MODE or "").strip().lower()
 
-    await update.message.reply_text(text, reply_markup=_menu_keyboard())
+    if mode == "order":
+        if is_logged:
+            text = "✅ Xush kelibsiz. Kerakli bo‘limni tanlang: /kiritish."
+        elif is_admin:
+            text = "🛠 Admin. /admin orqali operatorlarni boshqarasiz. Operator sifatida ishlash uchun /login ham bor."
+        else:
+            text = "Assalomu alaykum. Botdan foydalanish uchun avval /login qiling."
+    else:
+        if is_logged:
+            text = "✅ Xush kelibsiz. Kerakli bo‘limlarni tanlang: /tasdiq yoki /takror."
+        elif is_admin:
+            text = "🛠 Admin. /admin orqali operatorlarni boshqarasiz. Operator sifatida ishlash uchun /login ham bor."
+        else:
+            text = "Assalomu alaykum. Botdan foydalanish uchun avval /login qiling."
+
+    await update.message.reply_text(text, reply_markup=_menu_keyboard(is_logged, is_admin))

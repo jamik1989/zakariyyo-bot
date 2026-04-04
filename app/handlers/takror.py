@@ -33,10 +33,7 @@ CONFIRM_STORE_NAME = "Abusahiy 75"
 
 def _menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton("/tasdiq"),
-            KeyboardButton("/takror"),
-        ]],
+        keyboard=[[KeyboardButton("/tasdiq"), KeyboardButton("/takror")]],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=True,
