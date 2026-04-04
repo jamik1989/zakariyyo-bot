@@ -192,7 +192,6 @@ def _fmt_ms_to_tg(date_iso: Optional[str], time_hms: Optional[str]) -> str:
     raw = f"{date_iso} {time_hms or '00:00:00'}"
     try:
         dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
-        dt = dt.replace(tzinfo=MS_TZ).astimezone(TG_TZ)
         return dt.strftime("%d.%m.%Y %H:%M")
     except Exception:
         return raw
@@ -562,7 +561,12 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         client = parts[1] if len(parts) == 2 else ""
         cp_name = f"{b} {client}".strip() if client else b
         new_cp = get_or_create_counterparty(name=cp_name, phone=cp.get("phone"))
-        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": new_cp.get("id"),
+            "name": new_cp.get("name"),
+            "phone": new_cp.get("phone"),
+            "meta": new_cp.get("meta"),
+        }
         context.user_data.pop("edit_target", None)
 
     elif target == "client":
@@ -575,7 +579,12 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
         brand = old_name.split(" ", 1)[0] if old_name else ""
         cp_name = f"{brand} {name}".strip() if brand else name
         new_cp = get_or_create_counterparty(name=cp_name, phone=cp.get("phone"))
-        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": new_cp.get("id"),
+            "name": new_cp.get("name"),
+            "phone": new_cp.get("phone"),
+            "meta": new_cp.get("meta"),
+        }
         context.user_data.pop("edit_target", None)
 
     elif target == "phone":
@@ -585,7 +594,12 @@ async def handle_manual_amount_date(update: Update, context: ContextTypes.DEFAUL
             return STEP_AMOUNT_DATE
         cp = context.user_data.get("cp") or {}
         new_cp = get_or_create_counterparty(name=cp.get("name") or "NoName", phone=phone_plus)
-        context.user_data["cp"] = {"id": new_cp.get("id"), "name": new_cp.get("name"), "phone": new_cp.get("phone"), "meta": new_cp.get("meta")}
+        context.user_data["cp"] = {
+            "id": new_cp.get("id"),
+            "name": new_cp.get("name"),
+            "phone": new_cp.get("phone"),
+            "meta": new_cp.get("meta"),
+        }
         context.user_data.pop("edit_target", None)
 
     elif target == "date":
@@ -652,8 +666,9 @@ async def handle_check_optional(update: Update, context: ContextTypes.DEFAULT_TY
     ocr_date = context.user_data.get("date_iso")
     ocr_time = context.user_data.get("time_hms")
     if ocr_date and ocr_time:
+        moment_preview = _fmt_ms_to_tg(ocr_date, ocr_time)
         await msg.reply_text(
-            f"🕒 Chekdan topildi: {ocr_date} {ocr_time}\n"
+            f"🕒 Chekdan topildi: {moment_preview}\n"
             f"Agar noto‘g‘ri bo‘lsa, keyin *Tahrirlash* orqali o‘zgartirishingiz mumkin.",
             parse_mode="Markdown",
         )
