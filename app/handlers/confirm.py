@@ -1606,27 +1606,88 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
         if not store_meta:
             raise RuntimeError(f"Склад topilmadi: '{CONFIRM_STORE_NAME}'")
 
+        pt_meta = find_price_type_meta_by_name("Цена продажи")
+        if not pt_meta:
+            pt_meta = find_price_type_meta_by_name("Розница") or find_price_type_meta_by_name("Опт")
+
         moment_iso = _tg_now_as_ms_moment()
 
-        unit_ru = (d.get("qty_unit_ru") or "").strip()
-        qty_ru = f"{d.get('qty')}{(' ' + unit_ru) if unit_ru else ''}"
+        item_type = (d.get("item_type") or "forward item").strip()
+        size = (d.get("size") or "N/A").strip()
+        qm_note = (d.get("qm_note") or "").strip()
+
+        qty = int(d.get("qty") or 1)
+        qty_unit_ru = (d.get("qty_unit_ru") or "").strip()
+        qty_unit_lat = (d.get("qty_unit_lat") or "").strip()
+
+        abbr = _item_abbr3(item_type)
+        product_name = f"{brand} {abbr} {size}".strip()
+
+        # Forwardda narx yo‘q bo‘lsa, order ochilishi uchun minimal xavfsiz qiymat
+        price_uzs = 1000
+
+        # Default group: allowed gruppalardan birinchisi
+        groups = get_product_folders(limit=5000) or []
+        groups = _filter_groups(groups)
+        group_obj = groups[0] if groups else None
+        if not group_obj or not group_obj.get("meta"):
+            raise RuntimeError("Forward uchun gruppa topilmadi. MoySklad gruppalarini tekshiring.")
+
+        group_meta = group_obj.get("meta")
+        group_name = group_obj.get("name") or "Forward"
+
+        # Default kanal: mavjud kanallardan birinchisi
+        channels = get_sales_channels(limit=300) or []
+        sc_obj = channels[0] if channels else None
+        if not sc_obj or not sc_obj.get("meta"):
+            raise RuntimeError("Forward uchun kanal topilmadi. MoySklad sales channel larni tekshiring.")
+
+        sc_meta = sc_obj.get("meta")
+        sc_name = sc_obj.get("name") or "Forward"
 
         desc = "\n".join([
             f"[BOT FORWARD {str(d.get('tag') or '').upper()}] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
-            f"MT:{d.get('item_type') or '-'}",
-            f"R:{d.get('size') or '-'}",
-            f"QM:{d.get('qm_note') or '-'}",
-            f"S:{qty_ru or '-'}",
+            f"MT:{item_type}",
+            f"R:{size}",
+            f"QM:{qm_note or '-'}",
+            f"S:{qty}{(' ' + qty_unit_ru) if qty_unit_ru else ''}",
         ])
+
+        uom_meta = get_or_create_uom_meta(qty_unit_ru) if qty_unit_ru else None
+
+        prod = create_product(
+            name=product_name,
+            productfolder_meta=group_meta,
+            sale_price_uzs=price_uzs,
+            price_type_meta=pt_meta,
+            uom_meta=uom_meta,
+        )
+
+        prod_id = str(prod.get("id") or "")
+        prod_meta = prod.get("meta")
+
+        if prod_id and image_path and os.path.exists(image_path):
+            try:
+                attach_image_to_product(prod_id, image_path)
+            except Exception:
+                pass
+
+        positions = []
+        if prod_meta:
+            positions.append({
+                "assortment": {"meta": prod_meta},
+                "quantity": float(qty),
+                "price": int(price_uzs) * 100,
+            })
 
         order = create_customerorder(
             organization_meta=org["meta"],
             agent_meta=cp_meta,
-            sales_channel_meta=None,
+            sales_channel_meta=sc_meta,
             store_meta=store_meta,
             moment_iso=moment_iso,
             description=desc,
-            positions=[],
+            positions=positions,
         )
 
         order_id = str(order.get("id") or "")
@@ -1644,18 +1705,19 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
         if CONFIRM_CHAT_ID:
             moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
 
-            qty_show = _fmt_int(d.get("qty"))
-            unit_lat = (d.get("qty_unit_lat") or "").strip()
-            if unit_lat:
-                qty_show = f"{qty_show} {unit_lat}"
+            qty_show = _fmt_int(qty)
+            if qty_unit_lat:
+                qty_show = f"{qty_show} {qty_unit_lat}"
 
             caption = "\n".join([
                 f"📥 Forward #{d.get('tag')}",
                 f"🏷 B: {brand}",
-                f"🧾 {d.get('item_type') or '-'}",
-                f"📏 {d.get('size') or '-'}",
-                f"📝 {d.get('qm_note') or '-'}",
+                f"🧾 {item_type}",
+                f"📏 {size}",
+                f"📝 {qm_note or '-'}",
                 f"🔢 {qty_show}",
+                f"📊 KL: {sc_name}",
+                f"📁 Группа: {group_name}",
                 f"👨‍💼 OR: {op.get('name')}",
                 f"🕒 Vaqt: {moment_show}",
                 f"🏬 Sklad: {CONFIRM_STORE_NAME}",
@@ -1664,12 +1726,16 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
 
             if image_path and os.path.exists(image_path):
                 with open(image_path, "rb") as f:
-                    await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
+                    await context.bot.send_photo(
+                        chat_id=CONFIRM_CHAT_ID,
+                        photo=f,
+                        caption=caption
+                    )
             else:
                 await context.bot.send_message(chat_id=CONFIRM_CHAT_ID, text=caption)
 
         context.user_data.pop("forward_order_data", None)
-        await q.edit_message_text("✅ Forward buyurtma MoySkladga yuborildi.")
+        await q.edit_message_text("✅ Forward buyurtma rasmi va ma’lumotlari bilan MoySkladga yuborildi.")
 
     except Exception as e:
         await q.edit_message_text(f"❌ Forward buyurtmani yuborishda xatolik: {e}")
