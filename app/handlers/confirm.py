@@ -1478,68 +1478,123 @@ def _extract_forward_order_data(caption: str) -> Optional[Dict[str, Any]]:
         "price_uzs": None,
     }
 
-    unlabeled: List[str] = []
+    extras: List[str] = []
+
+    def _looks_like_size(s: str) -> bool:
+        ss = (s or "").lower().replace("х", "x").replace("*", "x").replace(" ", "")
+        return bool(re.match(r"^\d+(\.\d+)?x\d+(\.\d+)?([a-z]*)?$", ss))
+
+    def _looks_like_price_line(s: str) -> bool:
+        low = (s or "").lower()
+        return "narx" in low or "price" in low
 
     for line in lines[1:]:
         m = re.match(r"^\s*([A-Za-zА-Яа-яЁёЎўҚқҒғҲҳ\. ]+)\s*[:\-]\s*(.+?)\s*$", line)
         if m:
-            _parse_forward_template_line(m.group(1), m.group(2), data)
-        else:
-            unlabeled.append(line)
+            key = (m.group(1) or "").strip().lower()
+            val = (m.group(2) or "").strip()
 
-    numeric_idx = []
-    for i, line in enumerate(unlabeled):
-        if _digits_only(line):
-            numeric_idx.append(i)
+            if key in ("b", "brand", "brend"):
+                data["brand"] = val.upper()
+            elif key in ("mt", "m.t", "mahsulot", "mahsulot turi", "maxsulot", "maxsulot turi", "tovar", "item"):
+                data["item_type"] = val
+            elif key in ("r", "razmer", "size"):
+                data["size"] = val.lower().replace("х", "x").replace("*", "x").replace(" ", "")
+            elif key in ("qm", "q.m", "izoh", "comment", "extra"):
+                extras.append(val)
+            elif key in ("narx", "price"):
+                dd = _digits_only(val)
+                if dd:
+                    data["price_uzs"] = int(dd)
+            elif key in ("s", "soni", "qty", "quantity"):
+                qty, unit_lat, unit_ru = _parse_qty_and_unit(val)
+                if qty:
+                    data["qty"] = qty
+                    data["qty_unit_lat"] = unit_lat
+                    data["qty_unit_ru"] = unit_ru
+                else:
+                    extras.append(val)
+            else:
+                extras.append(val)
+            continue
 
-    qty_idx = None
-    price_idx = None
+        # labelsiz satrlar
+        qty, unit_lat, unit_ru = _parse_qty_and_unit(line)
+        if qty and not data["qty"]:
+            data["qty"] = qty
+            data["qty_unit_lat"] = unit_lat
+            data["qty_unit_ru"] = unit_ru
+            continue
 
-    for i in reversed(numeric_idx):
-        q, ul, ur = _parse_qty_and_unit(unlabeled[i])
-        if q:
-            qty_idx = i
-            data["qty"] = data["qty"] or q
-            data["qty_unit_lat"] = data["qty_unit_lat"] or ul
-            data["qty_unit_ru"] = data["qty_unit_ru"] or ur
-            break
+        if _looks_like_size(line) and not data["size"]:
+            data["size"] = line.lower().replace("х", "x").replace("*", "x").replace(" ", "")
+            continue
 
-    if numeric_idx:
-        for i in numeric_idx:
-            if i != qty_idx:
-                price_idx = i
+        if _looks_like_price_line(line) and not data["price_uzs"]:
+            dd = _digits_only(line)
+            if dd:
+                data["price_uzs"] = int(dd)
+                continue
+
+        if not data["item_type"]:
+            data["item_type"] = line
+            continue
+
+        # qolgan hammasi Q.M ga tushadi
+        extras.append(line)
+
+    # item_type dan keyin kelgan, lekin size topilmagan satr bo‘lsa size deb olishga urinib ko‘ramiz
+    if not data["size"]:
+        for x in list(extras):
+            if _looks_like_size(x):
+                data["size"] = x.lower().replace("х", "x").replace("*", "x").replace(" ", "")
+                extras.remove(x)
                 break
 
-    plain = [x for idx, x in enumerate(unlabeled) if idx not in set(i for i in [qty_idx, price_idx] if i is not None)]
+    # narx topilmagan bo‘lsa extras ichidan price line qidiramiz
+    if not data["price_uzs"]:
+        for x in list(extras):
+            if _looks_like_price_line(x):
+                dd = _digits_only(x)
+                if dd:
+                    data["price_uzs"] = int(dd)
+                    extras.remove(x)
+                    break
 
-    if plain and not data["item_type"]:
-        data["item_type"] = plain[0]
-    if len(plain) >= 2 and not data["size"]:
-        cand = plain[1].lower().replace("х", "x").replace("*", "x").replace(" ", "")
-        data["size"] = cand
-    if len(plain) >= 3 and not data["qm_note"]:
-        data["qm_note"] = " | ".join(plain[2:])
+    # qty topilmagan bo‘lsa extras ichidan yana qidiramiz
+    if not data["qty"]:
+        for x in list(extras):
+            q, ul, ur = _parse_qty_and_unit(x)
+            if q:
+                data["qty"] = q
+                data["qty_unit_lat"] = ul
+                data["qty_unit_ru"] = ur
+                extras.remove(x)
+                break
 
-    if price_idx is not None and not data["price_uzs"]:
-        d = _digits_only(unlabeled[price_idx])
-        if d:
-            data["price_uzs"] = int(d)
+    data["qm_note"] = " | ".join([x for x in extras if x.strip()])
 
     return data
 
 
 def _forward_missing_fields(d: Dict[str, Any]) -> List[str]:
     missing: List[str] = []
+
     if not (d.get("brand") or "").strip():
         missing.append("brand")
+
     if not (d.get("item_type") or "").strip():
         missing.append("item_type")
+
     if not (d.get("size") or "").strip():
         missing.append("size")
+
     if not isinstance(d.get("qty"), int) or int(d.get("qty") or 0) <= 0:
         missing.append("qty")
+
     if not isinstance(d.get("price_uzs"), int) or int(d.get("price_uzs") or 0) <= 0:
         missing.append("price")
+
     return missing
 
 
