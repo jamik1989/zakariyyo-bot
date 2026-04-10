@@ -76,6 +76,7 @@ from .handlers.confirm import (
     on_edit_value,
     on_forward_template_message,
     on_forward_template_action,
+    on_forward_template_text_input,
     CF_PICK,
     CF_NEW_CLICK,
     CF_CP_SEARCH,
@@ -264,6 +265,13 @@ def build_app() -> Application:
 
     application.add_handler(
         CallbackQueryHandler(on_forward_template_action, pattern=r"^fwdc:")
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            on_forward_template_text_input,
+        )
     )
 
     return application

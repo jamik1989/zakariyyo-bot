@@ -265,7 +265,7 @@ def _reset_item_fields_keep_cp_brand(d: Dict[str, Any]) -> Dict[str, Any]:
 def _item_is_complete(it: Dict[str, Any]) -> bool:
     try:
         return (
-            bool(it.get("item_type")) and bool(it.get("size")) and bool(it.get("bg_color")) and bool(it.get("text_color"))
+            bool(it.get("item_type")) and bool(it.get("size"))
             and isinstance(it.get("qty"), int) and it.get("qty") > 0
             and isinstance(it.get("price_uzs"), int) and it.get("price_uzs") > 0
             and bool(it.get("sales_channel_meta")) and bool(it.get("group_meta"))
@@ -331,8 +331,6 @@ def _render_review(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"🏷 B: {d.get('brand') or 'N/A'}\n"
         f"🧾 M.T: {d.get('item_type') or 'N/A'}\n"
         f"📏 R: {d.get('size') or 'N/A'}\n"
-        f"🎨 F: {d.get('bg_color') or 'N/A'}\n"
-        f"🔤 TI: {d.get('text_color') or 'N/A'}\n"
         f"📝 Q.M: {d.get('qm_note') or '—'}\n"
         f"🔢 S: {qty_show}\n"
         f"💰 Narx: {_fmt_int(d.get('price_uzs'))}\n"
@@ -890,38 +888,16 @@ async def on_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["size"] = s
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text("5) 🎨 F (Foni): Masalan: Oq / Qizil")
-    return CF_BG
+    await update.message.reply_text("5) 🔤 Qo‘shimcha ma’lumot / izoh kiriting. Masalan: flajok kesib buklash bilan")
+    return CF_QM
 
 
 async def on_bg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    val = (update.message.text or "").strip()
-    if not val:
-        await update.message.reply_text("❌ Foni bo‘sh bo‘lmasin. Masalan: Oq")
-        return CF_BG
-
-    d = context.user_data["confirm_data"]
-    d["bg_color"] = val
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("6) 🔤 TI (Text rangi): Masalan: Qora / Qizil")
-    return CF_TEXT
+    return await on_qm(update, context)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _ensure_confirm_data(context)
-    val = (update.message.text or "").strip()
-    if not val:
-        await update.message.reply_text("❌ Text rangi bo‘sh bo‘lmasin. Masalan: Qizil")
-        return CF_TEXT
-
-    d = context.user_data["confirm_data"]
-    d["text_color"] = val
-    context.user_data["confirm_data"] = d
-
-    await update.message.reply_text("7) 📝 Q.M: (izoh) yozing. Masalan: laminatsiya / teshik 2 ta / va hokazo")
-    return CF_QM
+    return await on_qm(update, context)
 
 
 async def on_qm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -931,7 +907,7 @@ async def on_qm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["qm_note"] = val
     context.user_data["confirm_data"] = d
 
-    await update.message.reply_text("8) 🔢 S (Soni) yozing. Masalan: 3000 yoki 3000 sht / 3000 rulon / 3000 kg / 3000 m / 3000 dona")
+    await update.message.reply_text("6) 🔢 S (Soni) yozing. Masalan: 3000 yoki 3000 sht / 3000 rulon / 3000 kg / 3000 m / 3000 dona")
     return CF_QTY
 
 
@@ -1071,8 +1047,6 @@ def _build_channel_caption(
         f"🏷 B: {brand}",
         f"🧾 {item.get('item_type')}",
         f"📏 {item.get('size')}",
-        f"🎨 {item.get('bg_color')}",
-        f"🔤 {item.get('text_color')}",
         f"🔢 {qty_show}",
         f"📝 Q.M: {qm_show}",
         f"📊 KL: {sc_name}",
@@ -1190,8 +1164,7 @@ async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             desc = "\n".join([
                 f"[BOT TASDIQLASH] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
                 f"Item: {idx}/{total}",
-                f"MT:{it.get('item_type')} R:{it.get('size')} F:{it.get('bg_color')} TI:{it.get('text_color')} "
-                f"QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
+                f"MT:{it.get('item_type')} R:{it.get('size')} QM:{it.get('qm_note') or '-'} S:{qty_ru} Narx:{it.get('price_uzs')} Group:{it.get('group_name')}",
             ])
 
             abbr = _item_abbr3(it.get("item_type") or "")
@@ -1338,7 +1311,7 @@ async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return CF_REVIEW
 
-    if key not in ("brand", "item", "size", "bg", "text", "qm", "qty", "channel"):
+    if key not in ("brand", "item", "size", "qm", "qty", "channel"):
         return CF_EDIT_CHOOSE
 
     context.user_data["edit_key"] = key
@@ -1347,8 +1320,6 @@ async def on_edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "brand": "🏷 B (Brend) kiriting:",
         "item": "🧾 M.T (masalan: karton birka):",
         "size": "📏 R (masalan: 10x5):",
-        "bg": "🎨 F (masalan: Oq):",
-        "text": "🔤 TI (masalan: Qora):",
         "qm": "📝 Q.M (izoh) kiriting:",
         "qty": "🔢 S (masalan: 3000 yoki 3000 sht/rulon/kg/m/dona):",
         "channel": "📊 KL ni qayta tanlash uchun OK yozing:",
@@ -1386,18 +1357,6 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return CF_EDIT_VALUE
         d["size"] = s
 
-    elif key == "bg":
-        if not val:
-            await update.message.reply_text("❌ F bo‘sh bo‘lmasin.")
-            return CF_EDIT_VALUE
-        d["bg_color"] = val.strip()
-
-    elif key == "text":
-        if not val:
-            await update.message.reply_text("❌ TI bo‘sh bo‘lmasin.")
-            return CF_EDIT_VALUE
-        d["text_color"] = val.strip()
-
     elif key == "qm":
         d["qm_note"] = val.strip()
 
@@ -1425,6 +1384,69 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
+def _pick_brand_counterparty(brand: str) -> Optional[Dict[str, Any]]:
+    brand = (brand or "").strip()
+    if not brand:
+        return None
+
+    try:
+        rows = search_counterparties(brand, limit=20) or []
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    brand_up = brand.upper()
+
+    exact = None
+    prefix = None
+    contains = None
+
+    for r in rows:
+        name = (r.get("name") or "").strip()
+        if not name or not r.get("meta"):
+            continue
+        name_up = name.upper()
+
+        if name_up == brand_up:
+            exact = r
+            break
+        if name_up.startswith(brand_up + " "):
+            prefix = prefix or r
+        if brand_up in name_up:
+            contains = contains or r
+
+    return exact or prefix or contains or (rows[0] if rows else None)
+
+
+def _parse_forward_template_line(key: str, value: str, data: Dict[str, Any]) -> None:
+    k = (key or "").strip().lower()
+    v = (value or "").strip()
+
+    if not v:
+        return
+
+    if k in ("b", "brand", "brend"):
+        data["brand"] = v.upper()
+    elif k in ("mt", "m.t", "mahsulot", "mahsulot turi", "maxsulot", "maxsulot turi", "tovar", "item"):
+        data["item_type"] = v
+    elif k in ("r", "razmer", "size"):
+        data["size"] = v.lower().replace("х", "x").replace("*", "x").replace(" ", "")
+    elif k in ("qm", "q.m", "izoh", "comment", "extra"):
+        data["qm_note"] = v
+    elif k in ("narx", "price"):
+        d = _digits_only(v)
+        if d:
+            data["price_uzs"] = int(d)
+    elif k in ("s", "soni", "qty", "quantity"):
+        qty, unit_lat, unit_ru = _parse_qty_and_unit(v)
+        if qty:
+            data["qty"] = qty
+            data["qty_unit_lat"] = unit_lat
+            data["qty_unit_ru"] = unit_ru
+
+
 def _extract_forward_order_data(caption: str) -> Optional[Dict[str, Any]]:
     text = (caption or "").strip()
     if not text:
@@ -1442,47 +1464,94 @@ def _extract_forward_order_data(caption: str) -> Optional[Dict[str, Any]]:
 
     tag = "tasdiq" if "#tasdiq" in low_first else "takror"
 
-    brand = re.sub(r"(?i)#tasdiq|#takror", "", first).strip()
-    if not brand:
-        brand = "N/A"
+    brand = re.sub(r"(?i)#tasdiq|#takror", "", first).strip().upper()
 
-    body = lines[1:]
-
-    item_type = body[0] if len(body) >= 1 else ""
-    size = body[1] if len(body) >= 2 else ""
-
-    qty = None
-    qty_unit_lat = ""
-    qty_unit_ru = ""
-
-    qty_idx = -1
-    for i in range(len(body) - 1, -1, -1):
-        q, ul, ur = _parse_qty_and_unit(body[i])
-        if q:
-            qty = q
-            qty_unit_lat = ul
-            qty_unit_ru = ur
-            qty_idx = i
-            break
-
-    qm_lines: List[str] = []
-    if len(body) >= 3:
-        start_idx = 2
-        end_idx = qty_idx if qty_idx >= 0 else len(body)
-        qm_lines = body[start_idx:end_idx]
-
-    qm_note = " | ".join([x for x in qm_lines if x.strip()])
-
-    return {
+    data: Dict[str, Any] = {
         "tag": tag,
         "brand": brand,
-        "item_type": item_type,
-        "size": size,
-        "qm_note": qm_note,
-        "qty": qty,
-        "qty_unit_lat": qty_unit_lat,
-        "qty_unit_ru": qty_unit_ru,
+        "item_type": "",
+        "size": "",
+        "qm_note": "",
+        "qty": None,
+        "qty_unit_lat": "",
+        "qty_unit_ru": "",
+        "price_uzs": None,
     }
+
+    unlabeled: List[str] = []
+
+    for line in lines[1:]:
+        m = re.match(r"^\s*([A-Za-zА-Яа-яЁёЎўҚқҒғҲҳ\. ]+)\s*[:\-]\s*(.+?)\s*$", line)
+        if m:
+            _parse_forward_template_line(m.group(1), m.group(2), data)
+        else:
+            unlabeled.append(line)
+
+    numeric_idx = []
+    for i, line in enumerate(unlabeled):
+        if _digits_only(line):
+            numeric_idx.append(i)
+
+    qty_idx = None
+    price_idx = None
+
+    for i in reversed(numeric_idx):
+        q, ul, ur = _parse_qty_and_unit(unlabeled[i])
+        if q:
+            qty_idx = i
+            data["qty"] = data["qty"] or q
+            data["qty_unit_lat"] = data["qty_unit_lat"] or ul
+            data["qty_unit_ru"] = data["qty_unit_ru"] or ur
+            break
+
+    if numeric_idx:
+        for i in numeric_idx:
+            if i != qty_idx:
+                price_idx = i
+                break
+
+    plain = [x for idx, x in enumerate(unlabeled) if idx not in set(i for i in [qty_idx, price_idx] if i is not None)]
+
+    if plain and not data["item_type"]:
+        data["item_type"] = plain[0]
+    if len(plain) >= 2 and not data["size"]:
+        cand = plain[1].lower().replace("х", "x").replace("*", "x").replace(" ", "")
+        data["size"] = cand
+    if len(plain) >= 3 and not data["qm_note"]:
+        data["qm_note"] = " | ".join(plain[2:])
+
+    if price_idx is not None and not data["price_uzs"]:
+        d = _digits_only(unlabeled[price_idx])
+        if d:
+            data["price_uzs"] = int(d)
+
+    return data
+
+
+def _forward_missing_fields(d: Dict[str, Any]) -> List[str]:
+    missing: List[str] = []
+    if not (d.get("brand") or "").strip():
+        missing.append("brand")
+    if not (d.get("item_type") or "").strip():
+        missing.append("item_type")
+    if not (d.get("size") or "").strip():
+        missing.append("size")
+    if not isinstance(d.get("qty"), int) or int(d.get("qty") or 0) <= 0:
+        missing.append("qty")
+    if not isinstance(d.get("price_uzs"), int) or int(d.get("price_uzs") or 0) <= 0:
+        missing.append("price")
+    return missing
+
+
+def _forward_field_prompt(field: str) -> str:
+    prompts = {
+        "brand": "🏷 Brend nomini kiriting:",
+        "item_type": "🧾 Maxsulot turini kiriting. Masalan: jakard to'qima",
+        "size": "📏 Razmerni kiriting. Masalan: 4x4",
+        "qty": "🔢 Sonini kiriting. Masalan: 3000 sht",
+        "price": "💰 Narxni kiriting. Masalan: 450",
+    }
+    return prompts.get(field, "Qiymatni kiriting:")
 
 
 def _build_forward_preview_text(d: Dict[str, Any]) -> str:
@@ -1491,14 +1560,21 @@ def _build_forward_preview_text(d: Dict[str, Any]) -> str:
     if unit_lat:
         qty_show = f"{qty_show} {unit_lat}"
 
+    price_show = _fmt_int(d.get("price_uzs")) if isinstance(d.get("price_uzs"), int) else "YO‘Q"
+
+    brand_cp = d.get("brand_counterparty") or {}
+    brand_status = "TOPILDI ✅" if brand_cp.get("meta") else "TOPILMADI ❌"
+
     return (
         "📥 Forward buyurtma topildi\n\n"
+        f"🔖 Tip: #{d.get('tag')}\n"
         f"🏷 B: {d.get('brand') or 'N/A'}\n"
+        f"🏢 Brand qidiruv: {brand_status}\n"
         f"🧾 M.T: {d.get('item_type') or 'N/A'}\n"
         f"📏 R: {d.get('size') or 'N/A'}\n"
         f"📝 Q.M: {d.get('qm_note') or '-'}\n"
         f"🔢 S: {qty_show}\n"
-        f"🔖 Tip: #{d.get('tag')}\n\n"
+        f"💰 Narx: {price_show}\n\n"
         "MoySkladga yuborilsinmi?"
     )
 
@@ -1528,10 +1604,7 @@ async def _save_forward_image(msg: Message) -> Optional[str]:
 
 async def on_forward_template_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg:
-        return
-
-    if not context.user_data.get("operator"):
+    if not msg or not context.user_data.get("operator"):
         return
 
     caption = (msg.caption or "").strip()
@@ -1547,15 +1620,120 @@ async def on_forward_template_message(update: Update, context: ContextTypes.DEFA
         await msg.reply_text("❌ Forward qilingan xabarda rasm topilmadi.")
         return
 
+    brand_cp = _pick_brand_counterparty(parsed.get("brand") or "")
+
     context.user_data["forward_order_data"] = {
         **parsed,
         "image_path": image_path,
+        "brand_counterparty": brand_cp or {},
     }
+    context.user_data.pop("forward_waiting_field", None)
 
     await msg.reply_text(
         _build_forward_preview_text(context.user_data["forward_order_data"]),
         reply_markup=_forward_review_kb(),
     )
+
+
+async def on_forward_template_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    field = context.user_data.get("forward_waiting_field")
+    d = context.user_data.get("forward_order_data")
+
+    if not field or not d or not update.message:
+        return
+
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text(_forward_field_prompt(field))
+        return
+
+    if field == "brand":
+        d["brand"] = text.upper()
+        d["brand_counterparty"] = _pick_brand_counterparty(d.get("brand") or "") or {}
+    elif field == "item_type":
+        d["item_type"] = text
+    elif field == "size":
+        d["size"] = text.lower().replace("х", "x").replace("*", "x").replace(" ", "")
+    elif field == "qty":
+        qty, unit_lat, unit_ru = _parse_qty_and_unit(text)
+        if not qty:
+            await update.message.reply_text("❌ Soni noto‘g‘ri. Masalan: 3000 sht")
+            return
+        d["qty"] = qty
+        d["qty_unit_lat"] = unit_lat
+        d["qty_unit_ru"] = unit_ru
+    elif field == "price":
+        dd = _digits_only(text)
+        if not dd:
+            await update.message.reply_text("❌ Narx noto‘g‘ri. Masalan: 450")
+            return
+        d["price_uzs"] = int(dd)
+
+    context.user_data["forward_order_data"] = d
+    context.user_data.pop("forward_waiting_field", None)
+
+    missing = _forward_missing_fields(d)
+    if missing:
+        nxt = missing[0]
+        context.user_data["forward_waiting_field"] = nxt
+        await update.message.reply_text(_forward_field_prompt(nxt))
+        return
+
+    if not (d.get("brand_counterparty") or {}).get("meta"):
+        await update.message.reply_text(
+            "❌ Bu brend MoySkladda topilmadi.\n"
+            "Yangi yaratish kerak."
+        )
+        return
+
+    await update.message.reply_text(
+        _build_forward_preview_text(d),
+        reply_markup=_forward_review_kb(),
+    )
+
+
+def _pick_forward_group(item_type: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    groups = get_product_folders(limit=5000) or []
+    groups = _filter_groups(groups)
+
+    item = (item_type or "").lower()
+
+    target_name = None
+    if "jakard" in item:
+        target_name = "birka jakard"
+    elif "ip" in item:
+        target_name = "birka ip"
+    elif "karton" in item:
+        target_name = "birka karton"
+    elif "koja" in item:
+        target_name = "birka koja"
+    elif "pechat" in item or "satin" in item:
+        target_name = "birka pechat"
+    elif "karobka" in item:
+        target_name = "karobka"
+    elif "pergament" in item or "stiker" in item or "o'g" in item:
+        target_name = "o'g, pergament, stiker"
+    elif "paket" in item and "karton" in item:
+        target_name = "paket karton"
+    elif "paket" in item or "salafan" in item:
+        target_name = "paket salafan"
+    elif "qolip" in item:
+        target_name = "qolip"
+
+    chosen = None
+    if target_name:
+        for g in groups:
+            if _norm_group_name(g.get("name") or "") == _norm_group_name(target_name):
+                chosen = g
+                break
+
+    if not chosen and groups:
+        chosen = groups[0]
+
+    if not chosen:
+        return None, ""
+
+    return chosen.get("meta"), chosen.get("name") or ""
 
 
 async def on_forward_template_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1567,37 +1745,34 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
 
     if action == "cancel":
         context.user_data.pop("forward_order_data", None)
+        context.user_data.pop("forward_waiting_field", None)
         await q.edit_message_text("❌ Forward buyurtma bekor qilindi.")
         return
 
     if action != "send":
         return
 
-    op = context.user_data.get("operator") or {}
-    op_id = int(op.get("id") or 0)
-
-    if not op_id:
-        await q.edit_message_text("❌ Operator aniqlanmadi.")
-        return
-
-    latest = list_open_confirms(op_id, limit=1)
-    if not latest:
+    missing = _forward_missing_fields(d)
+    if missing:
+        field = missing[0]
+        context.user_data["forward_waiting_field"] = field
         await q.edit_message_text(
-            "❌ Avval /tasdiq orqali mijozni ochib oling.\n"
-            "Forward buyurtma uchun OPEN confirm topilmadi."
+            "⚠️ Forward shablonda ba’zi maydonlar yetishmayapti.\n\n"
+            + _forward_field_prompt(field)
         )
-        context.user_data.pop("forward_order_data", None)
         return
 
-    confirm_ctx = latest[0]
-    cp_meta = confirm_ctx.get("counterparty_meta") or {}
-    brand = (d.get("brand") or confirm_ctx.get("brand") or "").strip()
+    brand_cp = d.get("brand_counterparty") or _pick_brand_counterparty(d.get("brand") or "") or {}
+    if not brand_cp or not brand_cp.get("meta"):
+        context.user_data["forward_order_data"] = {**d, "brand_counterparty": {}}
+        await q.edit_message_text(
+            "❌ Bu brend MoySkladda topilmadi.\n"
+            "Yangi yaratish kerak."
+        )
+        return
+
+    op = context.user_data.get("operator") or {}
     image_path = d.get("image_path") or ""
-
-    if not cp_meta:
-        await q.edit_message_text("❌ Kontragent meta topilmadi.")
-        context.user_data.pop("forward_order_data", None)
-        return
 
     try:
         org = get_default_organization()
@@ -1612,46 +1787,41 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
 
         moment_iso = _tg_now_as_ms_moment()
 
-        item_type = (d.get("item_type") or "forward item").strip()
-        size = (d.get("size") or "N/A").strip()
+        item_type = (d.get("item_type") or "").strip()
+        size = (d.get("size") or "").strip()
         qm_note = (d.get("qm_note") or "").strip()
-
-        qty = int(d.get("qty") or 1)
+        qty = int(d.get("qty") or 0)
         qty_unit_ru = (d.get("qty_unit_ru") or "").strip()
         qty_unit_lat = (d.get("qty_unit_lat") or "").strip()
+        price_uzs = int(d.get("price_uzs") or 0)
+        tag = (d.get("tag") or "tasdiq").strip()
 
-        abbr = _item_abbr3(item_type)
-        product_name = f"{brand} {abbr} {size}".strip()
-
-        # Forwardda narx yo‘q bo‘lsa, order ochilishi uchun minimal xavfsiz qiymat
-        price_uzs = 1000
-
-        # Default group: allowed gruppalardan birinchisi
-        groups = get_product_folders(limit=5000) or []
-        groups = _filter_groups(groups)
-        group_obj = groups[0] if groups else None
-        if not group_obj or not group_obj.get("meta"):
+        group_meta, group_name = _pick_forward_group(item_type)
+        if not group_meta:
             raise RuntimeError("Forward uchun gruppa topilmadi. MoySklad gruppalarini tekshiring.")
 
-        group_meta = group_obj.get("meta")
-        group_name = group_obj.get("name") or "Forward"
-
-        # Default kanal: mavjud kanallardan birinchisi
         channels = get_sales_channels(limit=300) or []
         sc_obj = channels[0] if channels else None
         if not sc_obj or not sc_obj.get("meta"):
             raise RuntimeError("Forward uchun kanal topilmadi. MoySklad sales channel larni tekshiring.")
-
         sc_meta = sc_obj.get("meta")
         sc_name = sc_obj.get("name") or "Forward"
 
+        brand = (d.get("brand") or "").strip()
+        cp_meta = brand_cp.get("meta")
+
         desc = "\n".join([
-            f"[BOT FORWARD {str(d.get('tag') or '').upper()}] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
+            f"[BOT FORWARD {tag.upper()}] B: {brand} | Operator: {op.get('name')} | Store: {CONFIRM_STORE_NAME}",
             f"MT:{item_type}",
             f"R:{size}",
             f"QM:{qm_note or '-'}",
             f"S:{qty}{(' ' + qty_unit_ru) if qty_unit_ru else ''}",
+            f"Narx:{price_uzs}",
+            f"Group:{group_name}",
         ])
+
+        abbr = _item_abbr3(item_type)
+        product_name = f"{brand} {abbr} {size}".strip()
 
         uom_meta = get_or_create_uom_meta(qty_unit_ru) if qty_unit_ru else None
 
@@ -1710,7 +1880,7 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
                 qty_show = f"{qty_show} {qty_unit_lat}"
 
             caption = "\n".join([
-                f"📥 Forward #{d.get('tag')}",
+                f"📥 Forward #{tag}",
                 f"🏷 B: {brand}",
                 f"🧾 {item_type}",
                 f"📏 {size}",
@@ -1726,20 +1896,18 @@ async def on_forward_template_action(update: Update, context: ContextTypes.DEFAU
 
             if image_path and os.path.exists(image_path):
                 with open(image_path, "rb") as f:
-                    await context.bot.send_photo(
-                        chat_id=CONFIRM_CHAT_ID,
-                        photo=f,
-                        caption=caption
-                    )
+                    await context.bot.send_photo(chat_id=CONFIRM_CHAT_ID, photo=f, caption=caption)
             else:
                 await context.bot.send_message(chat_id=CONFIRM_CHAT_ID, text=caption)
 
         context.user_data.pop("forward_order_data", None)
+        context.user_data.pop("forward_waiting_field", None)
         await q.edit_message_text("✅ Forward buyurtma rasmi va ma’lumotlari bilan MoySkladga yuborildi.")
 
     except Exception as e:
         await q.edit_message_text(f"❌ Forward buyurtmani yuborishda xatolik: {e}")
         context.user_data.pop("forward_order_data", None)
+        context.user_data.pop("forward_waiting_field", None)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
