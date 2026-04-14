@@ -246,9 +246,17 @@ def build_app() -> Application:
         entry_points=[CommandHandler("takror", takror_start)],
         states={
             TK_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_search_text)],
-            TK_PICK: [CallbackQueryHandler(takror_pick_product, pattern=r"^tkp:")],
+            TK_PICK: [
+            CallbackQueryHandler(takror_pick_product, pattern=r"^tkp:"),
+            CallbackQueryHandler(takror_review_action, pattern=r"^tkr:"),
+            CallbackQueryHandler(takror_edit_action, pattern=r"^tkr_edit:"),
+        ],
             TK_EXTRA: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_extra_text)],
-            TK_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_qty_text)],
+            TK_QTY: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, takror_qty_text),
+            CallbackQueryHandler(takror_review_action, pattern=r"^tkr:"),
+        ],
+        TK_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_edit_text)],
         },
         fallbacks=[CommandHandler("cancel", cancel_takror)],
         allow_reentry=True,
