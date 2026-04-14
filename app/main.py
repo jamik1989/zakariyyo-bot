@@ -262,7 +262,7 @@ def build_app() -> Application:
             MessageHandler(filters.TEXT & ~filters.COMMAND, takror_qty_text),
             CallbackQueryHandler(takror_review_action, pattern=r"^tkr:"),
         ],
-        TK_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND)],
+        TK_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_edit_text)],
         },
         fallbacks=[CommandHandler("cancel", cancel_takror)],
         allow_reentry=True,
