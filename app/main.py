@@ -127,9 +127,6 @@ from .handlers.takror import (
     takror_review_action,
     takror_edit_action,
     takror_edit_text,
-    takror_review_action,
-    takror_edit_action,
-    takror_edit_text,
     TK_EDIT_VALUE,
 )
 
@@ -264,7 +261,7 @@ def build_app() -> Application:
         ],
         TK_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, takror_edit_text)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_takror)],
+        fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
         per_message=False,
     )
