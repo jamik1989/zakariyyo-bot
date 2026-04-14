@@ -810,13 +810,12 @@ async def on_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if GROUP_CHAT_ID and created:
         moment_show = _fmt_ms_to_tg(date_iso, time_hms)
         caption = (
-            f"✅ {doc_kind} (черновик)\n\n"
-            f"👤 Kontragent: {_cp_title(cp)}\n"
-            f"💳 To‘lov turi: {'Naqt' if pt=='cash' else 'Karta'}\n"
-            f"💰 Summa: {_fmt_amount(amount)} UZS\n"
-            f"🕒 Vaqt: {moment_show}\n"
-            f"👨‍💼 Operator: {operator.get('name')} ({operator.get('phone')})\n"
-            f"🧾 MoySklad: {created.get('name','N/A')}"
+            f"???? {_cp_title(cp)}\n"
+            f"???? {'Naqt' if pt=='cash' else 'Karta'}\n"
+            f"???? {_fmt_amount(amount)} UZS\n"
+            f"???? {_moment_show}\n"
+            f"??????????? {operator.get('name')} ({operator.get('phone')})\n"
+            f"???? {doc_kind}"
         )
         if check_path and os.path.exists(check_path):
             with open(check_path, "rb") as f:
