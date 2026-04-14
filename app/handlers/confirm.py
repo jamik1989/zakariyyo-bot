@@ -203,6 +203,21 @@ def _parse_qty_and_unit(text: str) -> Tuple[Optional[int], str, str]:
     return qty, (unit or ""), (unit or "")
 
 
+
+
+def _normalize_size_text(text: str) -> str:
+    s = (text or "").strip().lower()
+    s = s.replace("??", "x").replace("*", "x").replace(",", ".")
+    s = re.sub(r"\s+", "", s)
+    return s
+
+
+def _normalize_qm_text(text: str) -> str:
+    s = (text or "").strip().lower()
+    if s == "kb":
+        return "kesib buklash"
+    return text.strip()
+
 def _ensure_confirm_data(context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data.get("confirm_data") or {}
     d.setdefault("brand", "")
@@ -902,7 +917,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_qm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _ensure_confirm_data(context)
-    val = (update.message.text or "").strip()
+    val = _normalize_qm_text((update.message.text or "").strip())
     d = context.user_data["confirm_data"]
     d["qm_note"] = val
     context.user_data["confirm_data"] = d
@@ -1035,27 +1050,31 @@ def _build_channel_caption(
     order_name: str,
 ) -> str:
     unit_ru = (item.get("qty_unit_ru") or "").strip()
-    unit_show = unit_ru or (item.get("qty_unit_lat") or "").strip()
-    qty_show = f"{item.get('qty')}{(' ' + unit_show) if unit_show else ''}"
-    qm = (item.get("qm_note") or "").strip()
-    qm_show = qm if qm else "-"
+    unit_lat = (item.get("qty_unit_lat") or "").strip()
+    unit_show = unit_lat or unit_ru
 
+    qty_show = _fmt_int(item.get("qty"))
+    if unit_show:
+        qty_show = f"{qty_show} {unit_show}"
+
+    qm_show = (item.get("qm_note") or "").strip() or "-"
     moment_show = _fmt_moysklad_moment_for_tg(moment_iso) or moment_iso
 
     return "\n".join([
-        f"📦 Buyurtma: {idx}/{total}",
-        f"🏷 B: {brand}",
-        f"🧾 {item.get('item_type')}",
-        f"📏 {item.get('size')}",
-        f"🔢 {qty_show}",
-        f"📝 Q.M: {qm_show}",
-        f"📊 KL: {sc_name}",
-        f"👨‍💼 OR: {operator_name}",
-        f"🕒 Vaqt: {moment_show}",
-        f"🏬 Sklad: {CONFIRM_STORE_NAME}",
-        f"🧾 MS: {order_name}",
+        "???? Tekshiruv (Tasdiqlash):",
+        "",
+        f"???? {brand}",
+        f"???? {item.get('item_type')}",
+        f"???? {item.get('size')}",
+        f"???? {qm_show}",
+        f"???? {qty_show}",
+        f"???? {_fmt_int(item.get('price_uzs'))}",
+        f"???? {sc_name}",
+        f"???? {item.get('group_name')}",
+        f"???? {CONFIRM_STORE_NAME}",
+        f"???? {moment_show}",
+        "???? Rasm: BOR ???",
     ])
-
 
 async def on_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1358,7 +1377,7 @@ async def on_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d["size"] = s
 
     elif key == "qm":
-        d["qm_note"] = val.strip()
+        d["qm_note"] = _normalize_qm_text(val.strip())
 
     elif key == "qty":
         qty, unit_lat, unit_ru = _parse_qty_and_unit(val)
