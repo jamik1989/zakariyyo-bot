@@ -1038,6 +1038,27 @@ async def on_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CF_REVIEW
 
 
+
+
+def _parse_forward_total_qty(text: str) -> int:
+    total = 0
+    for line in (text or "").splitlines():
+        low = line.lower()
+        if "dona" in low or re.search(r"\bsh\b|\bsht\b", low):
+            nums = re.findall(r"(\d+)", line)
+            if nums:
+                total += int(nums[-1])
+    return total
+
+
+def _extract_forward_size(text: str) -> str:
+    m = re.search(r"(\d+[\.,]?\d*)\s*[x\*]\s*(\d+[\.,]?\d*)", text, re.I)
+    if not m:
+        return ""
+    a = m.group(1).replace(",", ".")
+    b = m.group(2).replace(",", ".")
+    return f"{a}x{b}"
+
 def _build_channel_caption(
     *,
     idx: int,
@@ -1482,10 +1503,9 @@ def _extract_forward_order_data(caption: str) -> Optional[Dict[str, Any]]:
         return None
 
     tag = "tasdiq" if "#tasdiq" in low_first else "takror"
-
     brand = re.sub(r"(?i)#tasdiq|#takror", "", first).strip().upper()
 
-    data: Dict[str, Any] = {
+    d: Dict[str, Any] = {
         "tag": tag,
         "brand": brand,
         "item_type": "",
@@ -1497,103 +1517,62 @@ def _extract_forward_order_data(caption: str) -> Optional[Dict[str, Any]]:
         "price_uzs": None,
     }
 
-    extras: List[str] = []
+    full_text = "\n".join(lines)
+    extras = []
 
-    def _looks_like_size(s: str) -> bool:
-        ss = (s or "").lower().replace("х", "x").replace("*", "x").replace(" ", "")
-        return bool(re.match(r"^\d+(\.\d+)?x\d+(\.\d+)?([a-z]*)?$", ss))
+    # avtomatik size
+    size_auto = _extract_forward_size(full_text)
+    if size_auto:
+        d["size"] = size_auto
 
-    def _looks_like_price_line(s: str) -> bool:
-        low = (s or "").lower()
-        return "narx" in low or "price" in low
+    # avtomatik qm
+    low_full = full_text.lower()
+    if "kesib buklash" in low_full or re.search(r"\bkb\b", low_full):
+        d["qm_note"] = "kesib buklash"
+
+    # jami qty
+    qty_auto = _parse_forward_total_qty(full_text)
+    if qty_auto > 0:
+        d["qty"] = qty_auto
+        if "dona" in low_full:
+            d["qty_unit_lat"] = "dona"
+            d["qty_unit_ru"] = "????????"
+        else:
+            d["qty_unit_lat"] = "sht"
+            d["qty_unit_ru"] = "????"
 
     for line in lines[1:]:
-        m = re.match(r"^\s*([A-Za-zА-Яа-яЁёЎўҚқҒғҲҳ\. ]+)\s*[:\-]\s*(.+?)\s*$", line)
-        if m:
-            key = (m.group(1) or "").strip().lower()
-            val = (m.group(2) or "").strip()
+        low = line.lower()
 
-            if key in ("b", "brand", "brend"):
-                data["brand"] = val.upper()
-            elif key in ("mt", "m.t", "mahsulot", "mahsulot turi", "maxsulot", "maxsulot turi", "tovar", "item"):
-                data["item_type"] = val
-            elif key in ("r", "razmer", "size"):
-                data["size"] = val.lower().replace("х", "x").replace("*", "x").replace(" ", "")
-            elif key in ("qm", "q.m", "izoh", "comment", "extra"):
-                extras.append(val)
-            elif key in ("narx", "price"):
-                dd = _digits_only(val)
-                if dd:
-                    data["price_uzs"] = int(dd)
-            elif key in ("s", "soni", "qty", "quantity"):
-                qty, unit_lat, unit_ru = _parse_qty_and_unit(val)
-                if qty:
-                    data["qty"] = qty
-                    data["qty_unit_lat"] = unit_lat
-                    data["qty_unit_ru"] = unit_ru
-                else:
-                    extras.append(val)
-            else:
-                extras.append(val)
+        if not d["item_type"] and not any(x in low for x in ["razmer", "dona", "sht", "sh", "narx", "fon:", "yoziq:", "kesib buklash"]):
+            d["item_type"] = line
             continue
 
-        # labelsiz satrlar
-        qty, unit_lat, unit_ru = _parse_qty_and_unit(line)
-        if qty and not data["qty"]:
-            data["qty"] = qty
-            data["qty_unit_lat"] = unit_lat
-            data["qty_unit_ru"] = unit_ru
+        if low.startswith("fon:") or low.startswith("yoziq:"):
+            extras.append(line)
             continue
 
-        if _looks_like_size(line) and not data["size"]:
-            data["size"] = line.lower().replace("х", "x").replace("*", "x").replace(" ", "")
+        if "razmer" in low and "dona" in low:
+            extras.append(line)
             continue
 
-        if _looks_like_price_line(line) and not data["price_uzs"]:
-            dd = _digits_only(line)
-            if dd:
-                data["price_uzs"] = int(dd)
+        if "narx" in low and d["price_uzs"] is None:
+            nums = re.findall(r"(\d+)", line)
+            if nums:
+                d["price_uzs"] = int(nums[-1])
                 continue
 
-        if not data["item_type"]:
-            data["item_type"] = line
-            continue
+    if extras:
+        add_qm = " | ".join(extras)
+        if d["qm_note"]:
+            d["qm_note"] = d["qm_note"] + " | " + add_qm
+        else:
+            d["qm_note"] = add_qm
 
-        # qolgan hammasi Q.M ga tushadi
-        extras.append(line)
+    brand_cp = _pick_brand_counterparty(d.get("brand") or "")
+    d["brand_counterparty"] = brand_cp or {}
 
-    # item_type dan keyin kelgan, lekin size topilmagan satr bo‘lsa size deb olishga urinib ko‘ramiz
-    if not data["size"]:
-        for x in list(extras):
-            if _looks_like_size(x):
-                data["size"] = x.lower().replace("х", "x").replace("*", "x").replace(" ", "")
-                extras.remove(x)
-                break
-
-    # narx topilmagan bo‘lsa extras ichidan price line qidiramiz
-    if not data["price_uzs"]:
-        for x in list(extras):
-            if _looks_like_price_line(x):
-                dd = _digits_only(x)
-                if dd:
-                    data["price_uzs"] = int(dd)
-                    extras.remove(x)
-                    break
-
-    # qty topilmagan bo‘lsa extras ichidan yana qidiramiz
-    if not data["qty"]:
-        for x in list(extras):
-            q, ul, ur = _parse_qty_and_unit(x)
-            if q:
-                data["qty"] = q
-                data["qty_unit_lat"] = ul
-                data["qty_unit_ru"] = ur
-                extras.remove(x)
-                break
-
-    data["qm_note"] = " | ".join([x for x in extras if x.strip()])
-
-    return data
+    return d
 
 
 def _forward_missing_fields(d: Dict[str, Any]) -> List[str]:
